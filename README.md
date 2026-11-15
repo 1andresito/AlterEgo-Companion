@@ -170,11 +170,11 @@ To use your own artwork, replace these files and keep the same names. Requiremen
 - Use a transparent PNG, so the desktop shows through around the monitor.
 - The CRT sweep effect is drawn inside the screen area defined by `SOURCE_SCREEN_RECT` in `src/alter_ego/character.py`. Update it if your frame has a different shape.
 
-Only use artwork you created or have permission to redistribute. Do not commit ripped game sprites, official character art, or voice clips without the relevant rights.
+The included artwork is fan-made for this non-commercial passion project. If you fork the project for anything else, use artwork you created or have permission to redistribute.
 
 ### Tray and taskbar icon
 
-Put a square image at `assets/AlterEgoIcon.jpg` (PNG works too if you change `ICON_FILE` in `src/alter_ego/app.py`). It is cropped to a circle with a green ring and used for the tray icon, the taskbar and Alt-Tab. Without the file, a simple "AE" badge is drawn instead. The icon file is gitignored for the same licensing reason as the expression artwork.
+`assets/AlterEgoIcon.jpg` is cropped to a circle with a green ring and used for the tray icon, the taskbar and Alt-Tab. Replace it with any square image (PNG works too if you change `ICON_FILE` in `src/alter_ego/app.py`). Without the file, a simple "AE" badge is drawn instead.
 
 For a packaged `.exe`, Task Manager and Explorer show the executable's own icon, so also pass `--icon your_icon.ico` to PyInstaller.
 

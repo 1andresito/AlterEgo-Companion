@@ -19,8 +19,3 @@ config.yaml
 # IDE
 .vscode/
 .idea/
-
-# Character artwork is not redistributed (see README "Expression artwork").
-# Drop your own eight PNGs into assets/animations/ locally.
-assets/animations/*.png
-assets/AlterEgoIcon.jpg

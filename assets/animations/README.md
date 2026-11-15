@@ -1,13 +1,13 @@
 # Expression artwork
 
-This folder must contain eight PNG files, one per expression (see the
-"Expression artwork" section of the main README for the exact names):
+Eight PNG files, one per expression (see the "Expression artwork" section of
+the main README for how they are used):
 
     AlterEgo_Happy.png        AlterEgo_Talk.png
     AlterEgo_PassionTalk.png  AlterEgo_ShyTalk.png
     AlterEgo_SideTalk.png     AlterEgo_Sad.png
     AlterEgo_SuprisedTalk.png AlterEgo_SweatTalk.png
 
-The images are intentionally not part of the repository. Use artwork you
-created or have permission to use. The app starts without them and shows a
-placeholder naming the missing file.
+To use your own character, replace these files and keep the same names and
+size (676 x 391, transparent PNG). The app starts without them and shows a
+placeholder naming any missing file.
