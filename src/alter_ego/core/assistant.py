@@ -131,6 +131,10 @@ class Responder(Protocol):
 
     def test_connection(self) -> str: ...
 
+    def reset(self) -> None:
+        """The conversation was cleared; forget any session state."""
+        ...
+
     def stream_reply(
         self,
         text: str,
@@ -205,6 +209,9 @@ class OfflineResponder:
     def test_connection(self) -> str:
         return "I'm in offline mode, so there's nothing to connect to. I can still keep you company!"
 
+    def reset(self) -> None:
+        pass
+
     def pick(self, text: str) -> tuple[Expression, str]:
         lowered = text.lower()
         for pattern, replies in self._rules:
@@ -228,6 +235,9 @@ class ProviderResponder:
     def describe(self) -> str:
         return self.provider.describe()
 
+    def reset(self) -> None:
+        self.provider.reset()
+
     def resolve_model(self) -> str:
         """The configured model, or the first installed one if none is set."""
         configured = str(self._config.get(self.provider.id, "model", "") or "")
@@ -242,12 +252,9 @@ class ProviderResponder:
         return models[0]
 
     def test_connection(self) -> str:
-        models = self.provider.list_models()
-        model = self.resolve_model()
-        return (
-            f"I can reach {self.provider.describe()}. I'll be thinking with '{model}'. "
-            f"({len(models)} model(s) installed.)"
-        )
+        # Each provider explains its own situation; we add which model will be used.
+        summary = self.provider.test_connection()
+        return f"{summary} I'll be thinking with '{self.resolve_model()}'."
 
     def build_messages(self, personality: Personality, history: Sequence[Message]) -> list[ChatMessage]:
         messages = [ChatMessage("system", personality.system_prompt + "\n\n" + TAG_INSTRUCTION)]
@@ -326,6 +333,7 @@ class Assistant(QObject):
         self._raw = ""                              # Everything received so far, tag included.
         self._reply: Message | None = None          # The message being streamed, once visible.
         self._failed = False
+        conversation.cleared.connect(lambda: self._responder.reset())
 
     @property
     def state(self) -> AssistantState:

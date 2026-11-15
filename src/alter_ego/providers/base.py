@@ -53,3 +53,6 @@ class Provider(ABC):
         """Check the provider is reachable. Returns a human-readable summary."""
         models = self.list_models()
         return f"{self.describe()}: {len(models)} model(s) available."
+
+    def reset(self) -> None:
+        """The conversation was cleared. Providers that keep their own session state drop it here."""

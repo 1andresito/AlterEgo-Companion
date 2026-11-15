@@ -26,6 +26,16 @@ DEFAULTS: dict[str, Any] = {
         "base_url": "http://localhost:11434",
         "model": "",  # empty = use the first model Ollama reports
     },
+    "claude_code": {
+        "command": "claude",  # or a full path to the Claude Code executable
+        "model": "",          # "", "default", "opus", "sonnet" or "haiku"
+        "effort": "",         # "", "low", "medium" or "high": lower is faster
+    },
+    "openai": {
+        "base_url": "https://api.openai.com/v1",  # or Groq, OpenRouter, LM Studio, ...
+        "api_key": "",                            # or set the OPENAI_API_KEY environment variable
+        "model": "",
+    },
 }
 
 

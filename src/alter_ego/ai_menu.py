@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtGui import QActionGroup
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QActionGroup, QDesktopServices
 from PySide6.QtWidgets import QMenu
 
 from .core.assistant import Assistant, ProviderResponder
@@ -83,6 +84,13 @@ def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_setti
             expression = Expression.SWEAT_TALK
         assistant.conversation.add(Message(Role.ASSISTANT, summary, expression=expression))
 
+    # --- Settings file: URLs and API keys live there until a settings window exists ---
+    def edit_settings_file() -> None:
+        if not config.path.exists():
+            config.save()  # Write the defaults so the user has something to edit.
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(config.path)))
+
     menu.addSeparator()
     menu.addAction("Test connection", test_connection)
+    menu.addAction("Edit settings file...", edit_settings_file)
     return menu

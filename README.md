@@ -2,9 +2,9 @@
 
 An open-source desktop companion built with Python and PySide6, inspired by the digital character Alter Ego from Danganronpa.
 
-**Current version: v0.3.0 — AI Integration.** Alter Ego lives on your desktop inside a green CRT monitor, opens a chat panel when you click it, and talks to you through a local AI model served by [Ollama](https://ollama.com). Replies stream in word by word, and the character's face follows the mood of what it says. Voice and memory are planned for later versions (see [Roadmap](#roadmap)).
+**Current version: v0.3.1 — AI providers.** Alter Ego lives on your desktop inside a green CRT monitor, opens a chat panel when you click it, and talks to you through the AI of your choice: a local model via [Ollama](https://ollama.com), **Claude through your existing Claude Code login (no API key)**, or any OpenAI-compatible API (ChatGPT, Groq, LM Studio, ...). Replies stream in word by word, and the character's face follows the mood of what it says. Voice and memory are planned for later versions (see [Roadmap](#roadmap)).
 
-> Without Ollama, Alter Ego falls back to a small set of in-character "offline" lines, so the app always runs. Cloud providers (Claude, OpenAI-compatible APIs) are planned next.
+> Without any provider, Alter Ego falls back to a small set of in-character "offline" lines, so the app always runs.
 
 > This is an unofficial, fan-inspired project. It is not affiliated with or endorsed by Spike Chunsoft or the Danganronpa franchise.
 
@@ -12,7 +12,8 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 
 - Frameless, always-on-top window. Everything outside the CRT artwork is transparent.
 - Click Alter Ego to open a CRT-styled chat panel with message history and a text input.
-- Local AI through Ollama: pick any installed model, replies stream in as they are generated, the window never freezes.
+- Three AI providers, switchable from the menu: Ollama (local), Claude via Claude Code (your subscription, no key), OpenAI-compatible APIs (your key).
+- Replies stream in as they are generated; the window never freezes.
 - The AI chooses an expression for each reply; the character's face follows (thinking → reply expression → back to idle).
 - Modular provider system: the chat, personality and reactions do not care which AI backend is answering.
 - Personality lives in `assets/personality/alter_ego.json`, not in the code.
@@ -52,7 +53,42 @@ If PowerShell blocks activation, run this once in the current terminal, then act
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-## Set up the AI (Ollama)
+## Choose an AI provider
+
+Right-click Alter Ego → **AI** → **Provider**. Settings live in `data/config.json`; **AI** → **Edit settings file...** opens it in your editor. Restart is not needed: changes from the menu apply at once, edits to the file apply on the next start.
+
+### Option A: Claude through Claude Code (no API key)
+
+Uses the Claude login you already have in [Claude Code](https://claude.com/claude-code), so a Claude subscription is enough.
+
+1. Install Claude Code, open a terminal, run `claude` and sign in with `/login`. Close it.
+2. In Alter Ego: **AI** → **Provider** → **Claude (via Claude Code login)**, then **AI** → **Test connection**.
+3. Optional: **AI** → **Model** to pick `opus`, `sonnet` or `haiku` (`default` = whatever Claude Code uses).
+
+How it works: for each message Alter Ego runs `claude -p` in the background with the personality as system prompt, **all tools disabled** (it cannot read your files or run commands) and your coding hooks/plugins switched off. Claude Code keeps the conversation context in its own session; clearing the chat starts a new one. Expect 3–8 seconds before the first word, since a new process starts each time. Set `"effort": "low"` under `claude_code` in the settings file for faster answers.
+
+> **Terms:** this drives the official Claude Code command on your own computer with your own account. Whether a Claude subscription may be used by a third-party application like this one is governed by Anthropic's usage policies, which can change. Check them before relying on it, and use the API-key route if in doubt.
+
+### Option B: OpenAI-compatible API (ChatGPT and many others)
+
+Works with OpenAI, Groq, OpenRouter, Mistral, LM Studio, llama.cpp server, and anything else that offers `/v1/chat/completions`.
+
+1. **AI** → **Edit settings file...** and fill in the `openai` section:
+
+   ```json
+   "openai": {
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-...",
+     "model": "gpt-4o-mini"
+   }
+   ```
+
+   The key can also come from the `OPENAI_API_KEY` environment variable. For Groq use `https://api.groq.com/openai/v1`, for LM Studio `http://localhost:1234/v1` (no key needed).
+2. Restart Alter Ego, then **AI** → **Provider** → **OpenAI-compatible API** and **AI** → **Model**.
+
+Your conversation text goes to that service; you pay for usage with your own key. Never commit `data/config.json`.
+
+### Option C: Ollama (local, free)
 
 1. Install Ollama from <https://ollama.com> and make sure it is running (it sits in the tray).
 2. Download a model. A small one is fine for chatting:
@@ -63,19 +99,22 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 3. Start Alter Ego. Right-click the character → **AI** → **Model** to pick the model (the first installed one is used by default), and **AI** → **Test connection** to have Alter Ego confirm it can reach Ollama.
 
-If Ollama is on another machine or port, edit `data/config.json` (created the first time you change a setting):
+If Ollama is on another machine or port, change `base_url` under `ollama` in the settings file.
+
+### The settings file
+
+`data/config.json` is created the first time a setting is changed. All keys with their defaults:
 
 ```json
 {
   "provider": "ollama",
-  "ollama": {
-    "base_url": "http://localhost:11434",
-    "model": "llama3.2"
-  }
+  "ollama":      { "base_url": "http://localhost:11434", "model": "" },
+  "claude_code": { "command": "claude", "model": "", "effort": "" },
+  "openai":      { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "" }
 }
 ```
 
-Set `"provider": "offline"` (or use **AI** → **Provider**) to run without any AI.
+`provider` is one of `offline`, `ollama`, `claude_code`, `openai`. An empty `model` means "the first one available".
 
 ## Controls
 
@@ -160,14 +199,17 @@ AlterEgo-Companion/
 │       │   ├── personality.py    # Loads the personality JSON
 │       │   ├── conversation.py   # Message + Conversation history
 │       │   └── assistant.py      # Assistant (worker thread, expression tags), responders
-│       ├── providers/        # AI backends
+│       ├── providers/        # AI backends (all standard library, no SDKs)
 │       │   ├── base.py           # Provider interface + ProviderError
-│       │   └── ollama.py         # Ollama over HTTP (standard library only)
+│       │   ├── ollama.py         # Ollama over HTTP
+│       │   ├── claude_code.py    # Claude via the `claude -p` command (your login)
+│       │   └── openai_compat.py  # OpenAI-style /chat/completions (SSE streaming)
 │       └── settings/
 │           └── config.py         # Loads/saves data/config.json
 ├── tests/
 │   ├── test_core.py
-│   └── test_providers.py     # Runs the Ollama provider against a fake local server
+│   ├── test_providers.py     # Providers against fake servers and a fake `claude`
+│   └── fake_claude.py        # Stand-in for the Claude Code command
 ├── main.py                   # Entry point: python main.py
 ├── requirements.txt
 ├── LICENSE
@@ -190,7 +232,7 @@ Adding another backend means writing one `Provider` subclass in `providers/` and
 python -m unittest discover -s tests -v
 ```
 
-The tests cover the non-visual parts: personality and config loading, conversation history, expression-tag parsing, the assistant's streaming send/reply cycle (including failures and cancellation), and the Ollama provider against a fake local Ollama server. They do not need Ollama installed.
+The tests cover the non-visual parts: personality and config loading, conversation history, expression-tag parsing and reply clean-up, the assistant's streaming send/reply cycle (including failures and cancellation), and all three providers against fakes (a fake Ollama server, a fake OpenAI server and a fake `claude` command). They need neither Ollama, Claude Code nor an API key.
 
 ## Build a Windows executable
 
@@ -210,7 +252,7 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 - [x] v0.1.1: Expression system, crossfade transitions, CRT sweep, size presets
 - [x] v0.2.0: Chat panel, character reactions, personality configuration
 - [x] v0.3.0: Provider framework, Ollama, streaming replies, AI-chosen expressions
-- [ ] v0.3.1: Cloud providers (Claude API, OpenAI-compatible APIs)
+- [x] v0.3.1: Claude via Claude Code login, OpenAI-compatible APIs
 - [ ] v0.4.0: Local wake-word detection and push-to-talk
 - [ ] v0.5.0: Speech recognition and text-to-speech
 - [ ] v0.6.0: Persistent memory
@@ -219,7 +261,9 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 ## Privacy
 
 - **Microphone:** not used. Voice features will arrive later with explicit controls.
-- **Network:** the only connection Alter Ego makes is to the Ollama server in your settings, `http://localhost:11434` by default, which is your own computer. Your messages, the conversation history and the personality prompt are sent there to generate replies. Nothing is sent anywhere else. In offline mode no network is used at all.
-- **Storage:** conversations are kept in memory only and are gone when the app quits. The only file written is `data/config.json` with your provider settings.
-
-When cloud providers are added, using one will be an explicit choice, and the README will say exactly what leaves your machine.
+- **Network:** depends on the provider you choose, and nothing is sent anywhere else.
+  - *Offline:* no network at all.
+  - *Ollama:* your messages, the conversation history and the personality prompt go to the Ollama server in your settings (`http://localhost:11434` by default, your own computer).
+  - *Claude via Claude Code:* the same text is sent to Anthropic by the Claude Code command under your own account, subject to Anthropic's privacy terms. Claude Code also stores the session transcript locally under its own folder (`~/.claude/`).
+  - *OpenAI-compatible:* the same text is sent to the service at `base_url` with your API key, subject to that service's terms.
+- **Storage:** conversations are kept in memory only and are gone when the app quits. The only file Alter Ego writes is `data/config.json`, which contains your settings and, if you use one, your API key. Keep it private; it is gitignored.
