@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from PySide6.QtCore import QEasingCurve, QPoint, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QActionGroup, QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
@@ -57,6 +59,10 @@ class CharacterWindow(QWidget):
         self._drag_offset: QPoint | None = None
         self._press_position: QPoint | None = None
         self._dragging = False
+
+        # Optional hook: app.py sets this to add menus the character itself
+        # knows nothing about (the AI settings), keeping this file UI-only.
+        self.extra_menu_builder: Callable[[QMenu], object] | None = None
 
         # Pre-scaled images, keyed by expression. Cleared whenever the size changes.
         self._scaled_cache: dict[Expression, QPixmap] = {}
@@ -263,6 +269,8 @@ class CharacterWindow(QWidget):
         menu.addSeparator()
         add_expression_menu(menu, self._expressions)
         self._add_size_menu(menu)
+        if self.extra_menu_builder is not None:
+            self.extra_menu_builder(menu)
         menu.addSeparator()
         menu.addAction("Hide Alter Ego", self.hide)
         menu.addAction("Quit", QApplication.quit)

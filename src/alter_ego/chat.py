@@ -107,6 +107,7 @@ class ChatWindow(QWidget):
         self._build_ui()
 
         self._conversation.message_added.connect(self._on_message_added)
+        self._conversation.message_updated.connect(self._on_message_updated)
         self._conversation.cleared.connect(self._on_cleared)
         assistant.state_changed.connect(lambda _state: self._update_input_state())
         self._render()
@@ -163,6 +164,7 @@ class ChatWindow(QWidget):
             self._input.clear()
 
     def _clear(self) -> None:
+        self._assistant.cancel()
         self._type_timer.stop()
         self._typing_message = None
         self._conversation.clear()
@@ -193,23 +195,36 @@ class ChatWindow(QWidget):
             self._update_input_state()
         self._render()
 
+    def _on_message_updated(self, message: Message) -> None:
+        if not self._conversation.contains(message):
+            return  # A reply that was still streaming when the chat was cleared.
+        if message.role is Role.ASSISTANT and self._typing_message is None and not message.complete:
+            self._typing_message = message
+            self._typed_chars = 0
+            self._type_timer.start()
+            self._update_input_state()
+        self._render()
+
     def _on_cleared(self) -> None:
         self._render()
         self._update_input_state()
 
     def _type_step(self) -> None:
-        if self._typing_message is None:
+        """Reveal a few more characters. Works for whole replies and for ones still streaming in."""
+        message = self._typing_message
+        if message is None:
             self._type_timer.stop()
             return
-        self._typed_chars += TYPE_CHARS_PER_TICK
-        if self._typed_chars >= len(self._typing_message.text):
+        if self._typed_chars < len(message.text):
+            self._typed_chars = min(self._typed_chars + TYPE_CHARS_PER_TICK, len(message.text))
+            self._render()
+        elif message.complete:
             self._type_timer.stop()
             self._typing_message = None
             self._render()
             self._update_input_state()
             self.typing_finished.emit()
-        else:
-            self._render()
+        # else: caught up with a reply that is still streaming; wait for more text.
 
     def _render(self) -> None:
         """Rebuild the whole history as HTML.
@@ -221,7 +236,7 @@ class ChatWindow(QWidget):
         parts = []
         for message in self._conversation.messages:
             text = message.text
-            if message is self._typing_message:
+            if message is self._typing_message or not message.complete:
                 text = text[: self._typed_chars] + "▌"  # left half block = cursor
             parts.append(self._format_message(message, text))
 

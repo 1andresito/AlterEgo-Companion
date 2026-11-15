@@ -1,7 +1,7 @@
 """Makes the character's face follow the conversation.
 
-thinking  -> side glance
-replying  -> the expression attached to the reply, for as long as it is typed out
+thinking   -> side glance
+replying   -> the expression attached to the reply, for as long as it is typed out
 afterwards -> back to the idle expression after a short pause
 
 This is the only place that connects the assistant to the ExpressionManager.
@@ -39,7 +39,8 @@ class CharacterReactions(QObject):
         self._idle_timer.timeout.connect(self._return_to_idle)
 
         assistant.state_changed.connect(self._on_state_changed)
-        assistant.conversation.message_added.connect(self._on_message_added)
+        assistant.conversation.message_added.connect(self._on_message_changed)
+        assistant.conversation.message_updated.connect(self._on_message_changed)
         chat.typing_finished.connect(self._idle_timer.start)
 
     def _on_state_changed(self, state: AssistantState) -> None:
@@ -47,7 +48,8 @@ class CharacterReactions(QObject):
             self._idle_timer.stop()
             self._expressions.set_expression(THINKING_EXPRESSION)
 
-    def _on_message_added(self, message: Message) -> None:
+    def _on_message_changed(self, message: Message) -> None:
+        # The expression may only become known part-way through a streamed reply.
         if message.role is Role.ASSISTANT and message.expression is not None:
             self._idle_timer.stop()
             self._expressions.set_expression(message.expression)

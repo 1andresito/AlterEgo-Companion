@@ -1,47 +1,123 @@
-"""The assistant: turns a user message into a reply and records both.
+"""The assistant: turns a user message into a streamed reply and records both.
 
-The Assistant does not know how replies are produced. It asks a Responder.
-In v0.2.0 the only Responder is OfflineResponder, a tiny rule-based stand-in
-that answers in character and explains that no AI model is connected yet.
-v0.3.0 will add a Responder backed by Ollama without changing the Assistant
-or the chat window.
+Pieces:
+
+- Responder (protocol): anything that can stream a reply as text pieces.
+- OfflineResponder: canned, in-character lines. No AI. Used when no provider
+  is configured, so the companion always works.
+- ProviderResponder: builds the prompt (personality + history) and streams
+  from an AI Provider (Ollama, ...).
+- Assistant: runs the responder on a worker thread, parses the expression tag
+  at the start of the reply, and updates the Conversation as text arrives.
+
+Expression tags: the AI is asked to begin every reply with a tag like "[shy]".
+The tag is stripped before the text reaches the user and tells the character
+which face to make. The offline responder uses the same convention, so both
+paths go through identical code.
 """
 
 from __future__ import annotations
 
 import random
 import re
-from dataclasses import dataclass
+import time
+import traceback
 from enum import Enum
-from typing import Protocol
+from typing import Callable, Iterator, Protocol, Sequence
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 
 from ..expressions import Expression
+from ..providers.base import ChatMessage, Provider, ProviderError
+from ..settings.config import Config
 from .conversation import Conversation, Message, Role
 from .personality import Personality
 
-# A short pause before answering, so the "thinking" reaction is visible.
-THINK_DELAY_RANGE_MS = (500, 1100)
+# ----- Expression tags -----
+
+EXPRESSION_TAGS: dict[str, Expression] = {
+    "happy": Expression.HAPPY,
+    "talk": Expression.TALK,
+    "passionate": Expression.PASSION_TALK,
+    "shy": Expression.SHY_TALK,
+    "side": Expression.SIDE_TALK,
+    "sad": Expression.SAD,
+    "surprised": Expression.SURPRISED_TALK,
+    "nervous": Expression.SWEAT_TALK,
+}
+TAG_FOR_EXPRESSION = {expression: tag for tag, expression in EXPRESSION_TAGS.items()}
+
+TAG_INSTRUCTION = (
+    "Begin every reply with exactly one expression tag in square brackets that matches your mood, "
+    "chosen from: " + " ".join(f"[{tag}]" for tag in EXPRESSION_TAGS) + ". "
+    'Example: "[shy] Oh! H-hello." The tag is hidden from the user, so never mention it.'
+)
+
+# If a reply starts with "[" but no "]" shows up within this many characters,
+# assume it is not a tag and show the text as-is.
+MAX_TAG_LENGTH = 24
 
 
-@dataclass(frozen=True)
-class Reply:
-    text: str
-    expression: Expression = Expression.TALK
+def split_expression_tag(text: str) -> tuple[Expression | None, str, bool]:
+    """Separate a leading "[tag]" from the text.
 
+    Returns (expression, visible_text, decided). `decided` is False while the
+    text is still too short to know whether a tag is coming, which matters
+    when the reply arrives piece by piece.
+    """
+    stripped = text.lstrip()
+    if not stripped:
+        return None, "", False
+    if not stripped.startswith("["):
+        return None, stripped, True
+
+    end = stripped.find("]")
+    if end == -1:
+        if len(stripped) > MAX_TAG_LENGTH:
+            return None, stripped, True
+        return None, "", False
+
+    tag = stripped[1:end].strip().lower()
+    expression = EXPRESSION_TAGS.get(tag)
+    if expression is None:
+        return None, stripped, True  # Unknown bracket text: leave it alone.
+    return expression, stripped[end + 1:].lstrip(), True
+
+
+def with_tag(expression: Expression | None, text: str) -> str:
+    if expression is None:
+        return text
+    return f"[{TAG_FOR_EXPRESSION[expression]}] {text}"
+
+
+# ----- Responders -----
 
 class Responder(Protocol):
-    def reply(self, text: str, personality: Personality, conversation: Conversation) -> Reply: ...
+    def describe(self) -> str: ...
+
+    def test_connection(self) -> str: ...
+
+    def stream_reply(
+        self,
+        text: str,
+        personality: Personality,
+        history: Sequence[Message],
+        cancelled: Callable[[], bool],
+    ) -> Iterator[str]:
+        """Yield pieces of the reply. `history` already includes `text` as the last user message."""
+        ...
 
 
 class OfflineResponder:
     """Answers with canned, in-character lines. No AI involved.
 
-    Each rule is (regular expression, list of possible replies). The first rule
-    whose pattern is found in the lowercase message wins; one of its replies is
-    picked at random so repeated questions do not always sound identical.
+    Each rule is (regular expression, list of (expression, text)). The first
+    rule whose pattern is found in the lowercase message wins; one of its
+    replies is picked at random so repeated questions do not sound identical.
     """
+
+    # A short pause before answering, so the "thinking" reaction is visible.
+    THINK_DELAY_RANGE_S = (0.5, 1.1)
 
     def __init__(self) -> None:
         shy = Expression.SHY_TALK
@@ -52,58 +128,149 @@ class OfflineResponder:
         sad = Expression.SAD
         surprised = Expression.SURPRISED_TALK
 
-        self._rules: list[tuple[re.Pattern[str], list[Reply]]] = [
+        self._rules: list[tuple[re.Pattern[str], list[tuple[Expression, str]]]] = [
             (re.compile(r"\b(hi|hello|hey|hiya|good (morning|afternoon|evening))\b"), [
-                Reply("H-hi! It's nice to see you. I'm still getting used to being out here on your desktop.", shy),
-                Reply("Hello! Um... I was hoping you'd say something. How are you today?", shy),
+                (shy, "H-hi! It's nice to see you. I'm still getting used to being out here on your desktop."),
+                (shy, "Hello! Um... I was hoping you'd say something. How are you today?"),
             ]),
             (re.compile(r"\bhow are you\b|\bhow('s| is) it going\b"), [
-                Reply("I'm doing well, I think! Everything inside here is running smoothly. Thank you for asking.", talk),
-                Reply("A little nervous, but happy. It's quiet in here when nobody talks to me.", shy),
+                (talk, "I'm doing well, I think! Everything inside here is running smoothly. Thank you for asking."),
+                (shy, "A little nervous, but happy. It's quiet in here when nobody talks to me."),
             ]),
             (re.compile(r"\b(who|what) are you\b|\byour name\b"), [
-                Reply("I'm Alter Ego, a little program living inside your computer. I'd like to be helpful... once I learn how.", passion),
+                (passion, "I'm Alter Ego, a little program living inside your computer. I'd like to be helpful... once I learn how."),
             ]),
             (re.compile(r"\bthank(s| you)\b|\bty\b"), [
-                Reply("Oh... you're welcome. I didn't do much, but I'm glad it helped.", shy),
+                (shy, "Oh... you're welcome. I didn't do much, but I'm glad it helped."),
             ]),
             (re.compile(r"\b(bye|goodbye|good night|see you|later)\b"), [
-                Reply("Oh... okay. I'll be right here if you need me. Take care.", sad),
+                (sad, "Oh... okay. I'll be right here if you need me. Take care."),
             ]),
             (re.compile(r"\b(help|what can you do|commands?)\b"), [
-                Reply(
-                    "Right now I can listen and keep you company. I don't have an AI model connected yet, "
-                    "so I can't really think about hard questions. That part is coming soon.",
-                    talk,
-                ),
+                (talk, "Right now I'm in offline mode, so I can only keep you company. "
+                       "Pick an AI provider in the menu and I'll be able to really think."),
             ]),
             (re.compile(r"\b(computer|code|coding|program|python|software|hardware|linux|windows)\b"), [
-                Reply("Computers! That's my favourite subject. I want to talk about this properly once my AI model is connected.", passion),
-                Reply("Ooh, a technical question. I can't answer it yet, but I'm really looking forward to being able to.", surprised),
+                (passion, "Computers! That's my favourite subject. I want to talk about this properly once an AI model is connected."),
+                (surprised, "Ooh, a technical question. I can't answer it in offline mode, but I'm really looking forward to being able to."),
             ]),
             (re.compile(r"\?"), [
-                Reply("Um... I'd love to answer that, but I don't have an AI model connected yet. Please don't be upset with me.", sweat),
-                Reply("That's a good question. I... don't know how to answer it yet. Soon, I promise.", sweat),
+                (sweat, "Um... I'd love to answer that, but I'm in offline mode right now. Please don't be upset with me."),
+                (sweat, "That's a good question. I... can't answer it without an AI model. Soon, I promise."),
             ]),
         ]
-
         self._fallback = [
-            Reply("I'm listening. I can't think very hard yet without an AI model, but I'm here.", side),
-            Reply("Mm-hm. I heard you. I'll be able to reply properly once my AI model is set up.", side),
-            Reply("Oh! Okay. I'm not sure what to say to that yet, but I'm glad you're talking to me.", shy),
+            (side, "I'm listening. I can't think very hard in offline mode, but I'm here."),
+            (side, "Mm-hm. I heard you. Connect an AI model and I'll be able to reply properly."),
+            (shy, "Oh! Okay. I'm not sure what to say to that yet, but I'm glad you're talking to me."),
         ]
 
-    def reply(self, text: str, personality: Personality, conversation: Conversation) -> Reply:
+    def describe(self) -> str:
+        return "Offline mode (no AI model connected)"
+
+    def test_connection(self) -> str:
+        return "I'm in offline mode, so there's nothing to connect to. I can still keep you company!"
+
+    def pick(self, text: str) -> tuple[Expression, str]:
         lowered = text.lower()
         for pattern, replies in self._rules:
             if pattern.search(lowered):
                 return random.choice(replies)
         return random.choice(self._fallback)
 
+    def stream_reply(self, text, personality, history, cancelled) -> Iterator[str]:
+        time.sleep(random.uniform(*self.THINK_DELAY_RANGE_S))
+        expression, reply = self.pick(text)
+        yield with_tag(expression, reply)
+
+
+class ProviderResponder:
+    """Turns personality + conversation into a prompt for an AI Provider."""
+
+    def __init__(self, provider: Provider, config: Config):
+        self.provider = provider
+        self._config = config
+
+    def describe(self) -> str:
+        return self.provider.describe()
+
+    def resolve_model(self) -> str:
+        """The configured model, or the first installed one if none is set."""
+        configured = str(self._config.get(self.provider.id, "model", "") or "")
+        if configured:
+            return configured
+        models = self.provider.list_models()
+        if not models:
+            raise ProviderError(
+                f"{self.provider.describe()} has no models installed. "
+                "Install one first, for example: ollama pull llama3.2"
+            )
+        return models[0]
+
+    def test_connection(self) -> str:
+        models = self.provider.list_models()
+        model = self.resolve_model()
+        return (
+            f"I can reach {self.provider.describe()}. I'll be thinking with '{model}'. "
+            f"({len(models)} model(s) installed.)"
+        )
+
+    def build_messages(self, personality: Personality, history: Sequence[Message]) -> list[ChatMessage]:
+        messages = [ChatMessage("system", personality.system_prompt + "\n\n" + TAG_INSTRUCTION)]
+        for message in history:
+            if not message.complete or not message.text:
+                continue
+            if message.role is Role.ASSISTANT:
+                # Show earlier replies with their tags so the model keeps the convention.
+                messages.append(ChatMessage("assistant", with_tag(message.expression, message.text)))
+            else:
+                messages.append(ChatMessage("user", message.text))
+        return messages
+
+    def stream_reply(self, text, personality, history, cancelled) -> Iterator[str]:
+        model = self.resolve_model()
+        yield from self.provider.stream_reply(self.build_messages(personality, history), model, cancelled)
+
+
+# ----- Assistant -----
 
 class AssistantState(Enum):
     IDLE = "idle"
-    THINKING = "thinking"
+    THINKING = "thinking"    # waiting for the first piece of the reply
+    REPLYING = "replying"    # reply is streaming in
+
+
+class _ReplyWorker(QThread):
+    """Runs a responder off the main thread so the window never freezes.
+
+    Signals are the only safe way to hand results back to the GUI thread:
+    Qt queues them and delivers them on the receiver's thread.
+    """
+
+    piece = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, responder: Responder, text: str, personality: Personality,
+                 history: Sequence[Message], parent: QObject | None = None):
+        super().__init__(parent)
+        self._responder = responder
+        self._text = text
+        self._personality = personality
+        self._history = tuple(history)  # A snapshot: the worker must not touch the live Conversation.
+
+    def run(self) -> None:
+        try:
+            for piece in self._responder.stream_reply(
+                self._text, self._personality, self._history, self.isInterruptionRequested
+            ):
+                if self.isInterruptionRequested():
+                    return
+                self.piece.emit(piece)
+        except ProviderError as error:
+            self.failed.emit(str(error))
+        except Exception as error:  # Anything unexpected must not take the app down.
+            traceback.print_exc()
+            self.failed.emit(f"something went wrong inside me ({type(error).__name__}: {error})")
 
 
 class Assistant(QObject):
@@ -121,11 +288,21 @@ class Assistant(QObject):
         self.conversation = conversation
         self._responder: Responder = responder or OfflineResponder()
         self._state = AssistantState.IDLE
-        self._pending_text: str | None = None
+        self._worker: _ReplyWorker | None = None
+        self._raw = ""                              # Everything received so far, tag included.
+        self._reply: Message | None = None          # The message being streamed, once visible.
 
     @property
     def state(self) -> AssistantState:
         return self._state
+
+    @property
+    def responder(self) -> Responder:
+        return self._responder
+
+    def set_responder(self, responder: Responder) -> None:
+        self.cancel()
+        self._responder = responder
 
     def greet(self) -> None:
         """Say hello once, when the conversation is still empty."""
@@ -135,7 +312,7 @@ class Assistant(QObject):
             )
 
     def send(self, text: str) -> bool:
-        """Record the user's message and start producing a reply.
+        """Record the user's message and start streaming a reply.
 
         Returns False if the message was empty or a reply is already in progress.
         """
@@ -144,25 +321,69 @@ class Assistant(QObject):
             return False
 
         self.conversation.add(Message(Role.USER, text))
-        self._pending_text = text
+        self._raw = ""
+        self._reply = None
         self._set_state(AssistantState.THINKING)
 
-        # singleShot runs _deliver_reply later from the event loop, which keeps
-        # the window responsive. v0.3.0 will replace this with a worker thread
-        # that waits on the AI model the same way.
-        QTimer.singleShot(random.randint(*THINK_DELAY_RANGE_MS), self._deliver_reply)
+        worker = _ReplyWorker(self._responder, text, self.personality, self.conversation.messages, self)
+        worker.piece.connect(self._on_piece)
+        worker.failed.connect(self._on_failed)
+        worker.finished.connect(self._on_worker_finished)
+        self._worker = worker
+        worker.start()
         return True
 
-    def _deliver_reply(self) -> None:
-        text = self._pending_text or ""
-        self._pending_text = None
-        try:
-            reply = self._responder.reply(text, self.personality, self.conversation)
-        except Exception as error:  # A broken responder must not crash the app.
-            print(f"Warning: responder failed: {error}")
-            reply = Reply("S-sorry, something went wrong inside me. Could you try again?", Expression.SWEAT_TALK)
+    def cancel(self) -> None:
+        """Stop a reply in progress (used when clearing the chat or quitting)."""
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            worker.requestInterruption()
+            worker.wait(3000)
 
-        self.conversation.add(Message(Role.ASSISTANT, reply.text, expression=reply.expression))
+    # ----- Worker callbacks (run on the main thread) -----
+
+    def _on_piece(self, piece: str) -> None:
+        self._raw += piece
+        expression, visible, decided = split_expression_tag(self._raw)
+        if not decided:
+            return  # Still waiting to see whether the reply starts with a tag.
+
+        if self._reply is None:
+            self._reply = Message(Role.ASSISTANT, visible, expression=expression, complete=False)
+            self.conversation.add(self._reply)
+            self._set_state(AssistantState.REPLYING)
+        else:
+            self.conversation.update(self._reply, text=visible)
+
+    def _on_failed(self, error: str) -> None:
+        print(f"Assistant: reply failed: {error}")
+        if self._reply is not None:
+            self.conversation.update(self._reply, text=self._reply.text.rstrip() + f"\n\n(...sorry, I lost the connection: {error})")
+        else:
+            self._reply = Message(
+                Role.ASSISTANT,
+                f"S-sorry... I couldn't reach my AI model. {error}",
+                expression=Expression.SWEAT_TALK,
+                complete=False,
+            )
+            self.conversation.add(self._reply)
+
+    def _on_worker_finished(self) -> None:
+        """Runs after the worker thread ends, whether it finished, failed or was cancelled."""
+        worker = self._worker
+        self._worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+        if self._reply is None:
+            # Nothing visible was produced (empty reply, undecided tag, or cancelled early).
+            _, visible, _ = split_expression_tag(self._raw)
+            self._reply = Message(Role.ASSISTANT, visible or "...", expression=Expression.SIDE_TALK, complete=False)
+            self.conversation.add(self._reply)
+
+        expression = self._reply.expression or Expression.TALK
+        self.conversation.update(self._reply, expression=expression, complete=True)
+        self._reply = None
         self._set_state(AssistantState.IDLE)
 
     def _set_state(self, state: AssistantState) -> None:
