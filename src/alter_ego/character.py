@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 from typing import Callable
 
 from PySide6.QtCore import QEasingCurve, QPoint, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
-from PySide6.QtGui import QActionGroup, QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtGui import QActionGroup, QColor, QFont, QImage, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from .expressions import Expression, ExpressionManager
@@ -31,6 +32,13 @@ TRANSITION_MS = 220
 # A faint bright band sweeps down the screen now and then, like a CRT refresh.
 SWEEP_INTERVAL_MS = 7000
 SWEEP_DURATION_MS = 1600
+
+# TV static when the character appears (static clears to reveal the face) and
+# disappears (static takes over, then the window hides).
+STATIC_APPEAR_MS = 700
+STATIC_DISAPPEAR_MS = 450
+NOISE_FRAME_MS = 33            # ~30 new noise frames per second
+NOISE_SIZE = QSize(128, 72)    # Low-res noise, stretched pixelated over the screen
 
 # Mouse movement (in pixels) below this counts as a click, not a drag.
 CLICK_DRAG_THRESHOLD = 4
@@ -91,7 +99,72 @@ class CharacterWindow(QWidget):
         self._sweep_timer.timeout.connect(self._sweep_animation.start)
         self._sweep_timer.start(SWEEP_INTERVAL_MS)
 
+        # TV static: _static_level is how much static covers the screen (0 = none, 1 = all).
+        self._static_level = 0.0
+        self._static_phase: str | None = None  # "appear", "disappear" or None
+        self._noise = self._make_noise()
+        self._noise_frame = 0
+        self._static_animation = QVariantAnimation(self)
+        self._static_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._static_animation.valueChanged.connect(self._on_static_step)
+        self._static_animation.finished.connect(self._on_static_finished)
+        self._noise_timer = QTimer(self)
+        self._noise_timer.setInterval(NOISE_FRAME_MS)
+        self._noise_timer.timeout.connect(self._next_noise_frame)
+
         self._apply_size()
+
+    # ----- Appear / disappear -----
+
+    def appear(self) -> None:
+        """Show the window with a burst of static that clears to reveal the face."""
+        if self.isVisible() and self._static_phase is None:
+            self.raise_()
+            return
+        self._static_phase = "appear"
+        self.show()
+        self.raise_()
+        self._run_static(start=1.0, end=0.0, duration_ms=STATIC_APPEAR_MS)
+
+    def disappear(self) -> None:
+        """Fill the screen with static, then hide the window."""
+        if not self.isVisible() or self._static_phase == "disappear":
+            return
+        self._static_phase = "disappear"
+        self._run_static(start=self._static_level, end=1.0, duration_ms=STATIC_DISAPPEAR_MS)
+
+    def _run_static(self, start: float, end: float, duration_ms: int) -> None:
+        self._static_animation.stop()
+        self._static_animation.setStartValue(start)
+        self._static_animation.setEndValue(end)
+        self._static_animation.setDuration(duration_ms)
+        self._static_animation.start()
+        self._noise_timer.start()
+
+    def _on_static_step(self, value: float) -> None:
+        self._static_level = value
+        self.update()
+
+    def _on_static_finished(self) -> None:
+        self._noise_timer.stop()
+        phase, self._static_phase = self._static_phase, None
+        self._static_level = 0.0
+        if phase == "disappear":
+            self.hide()
+        self.update()
+
+    def _next_noise_frame(self) -> None:
+        self._noise = self._make_noise()
+        self._noise_frame += 1
+        self.update()
+
+    @staticmethod
+    def _make_noise() -> QImage:
+        """A small image of random grey pixels. os.urandom is the fastest way to get many random bytes."""
+        width, height = NOISE_SIZE.width(), NOISE_SIZE.height()
+        data = os.urandom(width * height)
+        # QImage does not copy the buffer, so .copy() keeps the pixels alive after `data` is gone.
+        return QImage(data, width, height, width, QImage.Format.Format_Grayscale8).copy()
 
     # ----- Size -----
 
@@ -188,8 +261,34 @@ class CharacterWindow(QWidget):
 
         if self._sweep_position is not None:
             self._paint_sweep(painter)
+        if self._static_level > 0.0:
+            self._paint_static(painter)
 
         painter.end()
+
+    def _paint_static(self, painter: QPainter) -> None:
+        screen = self._screen_rect()
+        level = min(max(self._static_level, 0.0), 1.0)
+
+        painter.save()
+        painter.setClipRect(screen)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)  # keep the pixels crunchy
+
+        # Random grey noise, then tinted green by multiplying with the CRT colour.
+        painter.setOpacity(level)
+        painter.drawImage(screen, self._noise)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
+        painter.fillRect(screen, QColor(150, 255, 110))
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+
+        # A dark band rolling down the screen, like a badly tuned TV.
+        band_height = screen.height() * 0.18
+        offset = (self._noise_frame * screen.height() * 0.06) % (screen.height() + band_height)
+        band = QRectF(screen.left(), screen.top() - band_height + offset, screen.width(), band_height)
+        painter.setOpacity(level * 0.45)
+        painter.fillRect(band, QColor(0, 10, 0))
+
+        painter.restore()
 
     def _paint_sweep(self, painter: QPainter) -> None:
         screen = self._screen_rect()
@@ -267,12 +366,11 @@ class CharacterWindow(QWidget):
         menu = QMenu(self)
         menu.addAction("Chat...", self.activated.emit)
         menu.addSeparator()
-        add_expression_menu(menu, self._expressions)
         self._add_size_menu(menu)
         if self.extra_menu_builder is not None:
             self.extra_menu_builder(menu)
         menu.addSeparator()
-        menu.addAction("Hide Alter Ego", self.hide)
+        menu.addAction("Hide Alter Ego", self.disappear)
         menu.addAction("Quit", QApplication.quit)
         menu.exec(global_position)
 
@@ -286,28 +384,3 @@ class CharacterWindow(QWidget):
             group.addAction(action)
             # name=name freezes the loop value; a plain lambda would see only the last name.
             action.triggered.connect(lambda checked=False, name=name: self.set_size_preset(name))
-
-
-def add_expression_menu(parent: QMenu, expressions: ExpressionManager) -> QMenu:
-    """Add an "Expression" submenu. Shared by the right-click and tray menus."""
-    menu = parent.addMenu("Expression")
-    group = QActionGroup(menu)  # Makes the checkmarks exclusive, like radio buttons.
-    actions: dict[Expression, object] = {}
-
-    for expression in Expression:
-        action = menu.addAction(expression.label)
-        action.setCheckable(True)
-        group.addAction(action)
-        action.triggered.connect(
-            lambda checked=False, expression=expression: expressions.set_expression(expression)
-        )
-        actions[expression] = action
-
-    # The tray menu lives for the whole session, so refresh the checkmark each
-    # time it opens in case the expression was changed from somewhere else.
-    def sync_checkmarks() -> None:
-        actions[expressions.current].setChecked(True)
-
-    menu.aboutToShow.connect(sync_checkmarks)
-    sync_checkmarks()
-    return menu

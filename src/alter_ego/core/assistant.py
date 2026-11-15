@@ -90,6 +90,40 @@ def with_tag(expression: Expression | None, text: str) -> str:
     return f"[{TAG_FOR_EXPRESSION[expression]}] {text}"
 
 
+# ----- Reply clean-up -----
+# The personality asks the model for spoken words only. Models do not always
+# listen, so stage directions like "*giggles*" and emojis are removed here too.
+
+_STAGE_DIRECTION = re.compile(r"\*[^*\n]*\*")
+_EMOJI = re.compile(
+    "[\U0001F300-\U0001FAFF"   # pictographs, emoticons, symbols
+    "\U0001F1E6-\U0001F1FF"    # flags
+    "☀-➿"            # misc symbols and dingbats
+    "️‍]+"           # variation selector, zero-width joiner
+)
+_SPACE_BEFORE_PUNCTUATION = re.compile(r" +([,.!?;:])")
+
+
+def clean_reply(text: str, final: bool) -> str:
+    """Remove stage directions and emojis from a reply.
+
+    `final` is False while the reply is still streaming: an unmatched "*" then
+    hides everything after it until the closing "*" arrives, so a stage
+    direction never flashes on screen half-written.
+    """
+    text = _STAGE_DIRECTION.sub("", text)
+    if "*" in text:
+        if final:
+            text = text.replace("*", "")
+        else:
+            text = text[: text.index("*")]
+    text = _EMOJI.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = _SPACE_BEFORE_PUNCTUATION.sub(r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip() if final else text.lstrip()
+
+
 # ----- Responders -----
 
 class Responder(Protocol):
@@ -291,6 +325,7 @@ class Assistant(QObject):
         self._worker: _ReplyWorker | None = None
         self._raw = ""                              # Everything received so far, tag included.
         self._reply: Message | None = None          # The message being streamed, once visible.
+        self._failed = False
 
     @property
     def state(self) -> AssistantState:
@@ -323,6 +358,7 @@ class Assistant(QObject):
         self.conversation.add(Message(Role.USER, text))
         self._raw = ""
         self._reply = None
+        self._failed = False
         self._set_state(AssistantState.THINKING)
 
         worker = _ReplyWorker(self._responder, text, self.personality, self.conversation.messages, self)
@@ -347,6 +383,7 @@ class Assistant(QObject):
         expression, visible, decided = split_expression_tag(self._raw)
         if not decided:
             return  # Still waiting to see whether the reply starts with a tag.
+        visible = clean_reply(visible, final=False)
 
         if self._reply is None:
             self._reply = Message(Role.ASSISTANT, visible, expression=expression, complete=False)
@@ -357,8 +394,10 @@ class Assistant(QObject):
 
     def _on_failed(self, error: str) -> None:
         print(f"Assistant: reply failed: {error}")
+        self._failed = True
         if self._reply is not None:
-            self.conversation.update(self._reply, text=self._reply.text.rstrip() + f"\n\n(...sorry, I lost the connection: {error})")
+            partial = clean_reply(self._reply.text, final=True)
+            self.conversation.update(self._reply, text=f"{partial}\n\n(...sorry, I lost the connection: {error})")
         else:
             self._reply = Message(
                 Role.ASSISTANT,
@@ -375,14 +414,22 @@ class Assistant(QObject):
         if worker is not None:
             worker.deleteLater()
 
-        if self._reply is None:
-            # Nothing visible was produced (empty reply, undecided tag, or cancelled early).
-            _, visible, _ = split_expression_tag(self._raw)
-            self._reply = Message(Role.ASSISTANT, visible or "...", expression=Expression.SIDE_TALK, complete=False)
-            self.conversation.add(self._reply)
-
-        expression = self._reply.expression or Expression.TALK
-        self.conversation.update(self._reply, expression=expression, complete=True)
+        if self._failed:
+            # _on_failed already wrote the message text; just close it.
+            self.conversation.update(self._reply, complete=True)
+        else:
+            expression, visible, _ = split_expression_tag(self._raw)
+            visible = clean_reply(visible, final=True)
+            if self._reply is None:
+                # Nothing was shown yet (empty reply, undecided tag, or cancelled early).
+                self._reply = Message(Role.ASSISTANT, "", expression=expression, complete=False)
+                self.conversation.add(self._reply)
+            self.conversation.update(
+                self._reply,
+                text=visible or "...",
+                expression=self._reply.expression or Expression.TALK,
+                complete=True,
+            )
         self._reply = None
         self._set_state(AssistantState.IDLE)
 

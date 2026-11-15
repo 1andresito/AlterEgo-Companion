@@ -21,6 +21,7 @@ from alter_ego.core.assistant import (  # noqa: E402
     AssistantState,
     OfflineResponder,
     ProviderResponder,
+    clean_reply,
     split_expression_tag,
     with_tag,
 )
@@ -188,6 +189,26 @@ class ExpressionTagTests(unittest.TestCase):
         self.assertEqual(with_tag(None, "plain"), "plain")
 
 
+class CleanReplyTests(unittest.TestCase):
+    def test_stage_directions_removed(self):
+        self.assertEqual(clean_reply("*giggles* Hi there! *typing noises*", final=True), "Hi there!")
+        self.assertEqual(clean_reply("I **really** like it.", final=True), "I really like it.")
+
+    def test_emojis_removed(self):
+        self.assertEqual(clean_reply("Hello! \U0001F60A\U0001F4BB How are you? ✨", final=True),
+                         "Hello! How are you?")
+
+    def test_unmatched_star_is_held_back_while_streaming(self):
+        self.assertEqual(clean_reply("Hi there. *nerv", final=False), "Hi there. ")
+        self.assertEqual(clean_reply("Hi there. *nervous laugh* I", final=False), "Hi there. I")
+
+    def test_unmatched_star_is_dropped_when_final(self):
+        self.assertEqual(clean_reply("Hi there. *nerv", final=True), "Hi there. nerv")
+
+    def test_plain_text_untouched(self):
+        self.assertEqual(clean_reply("Just talking, nothing fancy.", final=True), "Just talking, nothing fancy.")
+
+
 class OfflineResponderTests(unittest.TestCase):
     def setUp(self):
         self.responder = OfflineResponder()
@@ -282,6 +303,15 @@ class AssistantTests(unittest.TestCase):
         text, history = responder.calls[0]
         self.assertEqual(text, "what is 5+7?")
         self.assertEqual([m.role for m in history], [Role.USER])
+
+    def test_stage_directions_are_stripped_from_streamed_reply(self):
+        conversation = Conversation()
+        assistant = Assistant(Personality.default(), conversation,
+                              FakeResponder("[shy] *blushes* Th-thank you! \U0001F60A *looks away*", piece_size=2))
+        assistant.send("you're great")
+        self.run_until_idle(assistant)
+        self.assertEqual(conversation.messages[1].text, "Th-thank you!")
+        self.assertIs(conversation.messages[1].expression, Expression.SHY_TALK)
 
     def test_untagged_reply_defaults_to_talk(self):
         conversation = Conversation()

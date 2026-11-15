@@ -16,10 +16,11 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 - The AI chooses an expression for each reply; the character's face follows (thinking → reply expression → back to idle).
 - Modular provider system: the chat, personality and reactions do not care which AI backend is answering.
 - Personality lives in `assets/personality/alter_ego.json`, not in the code.
+- Replies are spoken words only: stage directions like `*giggles*`, emojis and markdown are filtered out.
+- TV-static effect when Alter Ego appears and disappears.
 - Settings (provider, model, server URL) live in `data/config.json`, which is never committed.
 - Offline fallback with friendly, in-character error messages when the AI cannot be reached.
-- Eight character expressions, switchable from the right-click menu or the tray menu.
-- Smooth crossfade when the expression changes.
+- Eight character expressions, chosen automatically by the conversation, with a smooth crossfade between them.
 - Subtle CRT "refresh sweep" that passes over the screen every few seconds.
 - Four size presets: Small, Medium, Large, Full size.
 - Drag the companion anywhere with the left mouse button.
@@ -88,9 +89,8 @@ Set `"provider": "offline"` (or use **AI** → **Provider**) to run without any 
 | Move the chat | Drag it by its header. It follows Alter Ego until you move it yourself. |
 | Choose AI provider / model | Right-click Alter Ego → **AI**, or tray menu → **AI** |
 | Check the AI connection | **AI** → **Test connection** (Alter Ego answers in the chat) |
-| Change expression | Right-click Alter Ego → **Expression**, or tray menu → **Expression** |
 | Change size | Right-click Alter Ego → **Size** |
-| Hide / show | Left-click the tray icon, or use either menu |
+| Hide / show | Left-click the tray icon, or use either menu (with a burst of static) |
 | Quit | Right-click menu or tray menu → **Quit** |
 
 ## Personality
@@ -132,6 +132,12 @@ To use your own artwork, replace these files and keep the same names. Requiremen
 - The CRT sweep effect is drawn inside the screen area defined by `SOURCE_SCREEN_RECT` in `src/alter_ego/character.py`. Update it if your frame has a different shape.
 
 Only use artwork you created or have permission to redistribute. Do not commit ripped game sprites, official character art, or voice clips without the relevant rights.
+
+### Tray and taskbar icon
+
+Put a square image at `assets/AlterEgoIcon.jpg` (PNG works too if you change `ICON_FILE` in `src/alter_ego/app.py`). It is cropped to a circle with a green ring and used for the tray icon, the taskbar and Alt-Tab. Without the file, a simple "AE" badge is drawn instead. The icon file is gitignored for the same licensing reason as the expression artwork.
+
+For a packaged `.exe`, Task Manager and Explorer show the executable's own icon, so also pass `--icon your_icon.ico` to PyInstaller.
 
 ## How the code is organized
 

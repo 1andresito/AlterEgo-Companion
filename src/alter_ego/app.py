@@ -4,11 +4,11 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
 from .ai_menu import add_ai_menu
-from .character import CharacterWindow, add_expression_menu
+from .character import CharacterWindow
 from .chat import ChatWindow
 from .core.assistant import Assistant, OfflineResponder, ProviderResponder, Responder
 from .core.conversation import Conversation
@@ -41,18 +41,48 @@ def build_responder(config: Config) -> Responder:
     return ProviderResponder(provider, config)
 
 
-def make_tray_icon() -> QIcon:
-    pixmap = QPixmap(64, 64)
-    pixmap.fill(QColor(0, 0, 0, 0))
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QColor("#10250d"))
-    painter.setPen(QColor("#8dff45"))
-    painter.drawRoundedRect(5, 5, 54, 54, 12, 12)
-    painter.setPen(QColor("#baff85"))
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "AE")
-    painter.end()
-    return QIcon(pixmap)
+ICON_FILE = "AlterEgoIcon.jpg"
+ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
+def make_app_icon(assets: Path) -> QIcon:
+    """The tray/taskbar icon: the user's artwork cropped to a circle with a green ring.
+
+    Falls back to a drawn "AE" badge if the image is missing. The icon is
+    rendered at several sizes so Windows can pick a sharp one for each place.
+    """
+    source = QPixmap(str(assets / ICON_FILE))
+    icon = QIcon()
+    for size in ICON_SIZES:
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        ring = max(1.0, size / 24)
+        inner = pixmap.rect().adjusted(int(ring), int(ring), -int(ring), -int(ring))
+
+        if source.isNull():
+            painter.setBrush(QColor("#10250d"))
+            painter.setPen(QPen(QColor("#8dff45"), ring))
+            painter.drawEllipse(inner)
+            painter.setPen(QColor("#baff85"))
+            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "AE")
+        else:
+            # Clip to a circle, draw the artwork scaled to cover it, then the ring on top.
+            clip = QPainterPath()
+            clip.addEllipse(inner)
+            painter.setClipPath(clip)
+            scaled = source.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                   Qt.TransformationMode.SmoothTransformation)
+            painter.drawPixmap((size - scaled.width()) // 2, (size - scaled.height()) // 2, scaled)
+            painter.setClipping(False)
+            painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            painter.setPen(QPen(QColor("#8dff45"), ring))
+            painter.drawEllipse(inner)
+        painter.end()
+        icon.addPixmap(pixmap)
+    return icon
 
 
 def show_window(window: QWidget) -> None:
@@ -61,11 +91,11 @@ def show_window(window: QWidget) -> None:
     window.activateWindow()
 
 
-def toggle_window(window: QWidget) -> None:
-    if window.isVisible():
-        window.hide()
+def toggle_character(character: CharacterWindow) -> None:
+    if character.isVisible():
+        character.disappear()
     else:
-        show_window(window)
+        character.appear()
 
 
 def place_chat_near(character: QWidget, chat: QWidget) -> None:
@@ -97,6 +127,8 @@ def run() -> int:
     app.setQuitOnLastWindowClosed(False)
 
     assets = assets_dir()
+    app_icon = make_app_icon(assets)
+    app.setWindowIcon(app_icon)  # Taskbar, Alt-Tab and the window list use this.
     config = Config.load()
     personality = Personality.load(assets / "personality" / "alter_ego.json")
     conversation = Conversation()
@@ -120,7 +152,7 @@ def run() -> int:
     if screen is not None:
         available = screen.availableGeometry()
         character.move(available.right() - character.width() - 32, available.top() + 48)
-    character.show()
+    character.appear()
 
     # The chat follows the character until the user drags the chat somewhere else.
     docked = {"value": True}
@@ -153,14 +185,13 @@ def run() -> int:
     if not QSystemTrayIcon.isSystemTrayAvailable():
         print("Warning: no system tray available. Right-click Alter Ego to quit.")
 
-    tray = QSystemTrayIcon(make_tray_icon(), app)
+    tray = QSystemTrayIcon(app_icon, app)
     tray.setToolTip("Alter Ego - desktop companion")
 
     menu = QMenu()
-    menu.addAction("Show Alter Ego", lambda: show_window(character))
-    menu.addAction("Hide Alter Ego", character.hide)
+    menu.addAction("Show Alter Ego", character.appear)
+    menu.addAction("Hide Alter Ego", character.disappear)
     menu.addAction("Chat...", open_chat)
-    add_expression_menu(menu, expressions)
     add_ai_menu(menu, assistant, config, apply_settings)
     menu.addSeparator()
     menu.addAction("Quit", app.quit)
@@ -168,7 +199,7 @@ def run() -> int:
 
     # Left-clicking the tray icon toggles the character window.
     tray.activated.connect(
-        lambda reason: toggle_window(character)
+        lambda reason: toggle_character(character)
         if reason == QSystemTrayIcon.ActivationReason.Trigger
         else None
     )
