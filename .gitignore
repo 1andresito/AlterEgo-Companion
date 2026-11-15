@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.venv/
+venv/
+.env
+
+# Build outputs
+build/
+dist/
+*.spec
+
+# User data (never commit personal conversations/settings)
+data/
+config.yaml
+
+# IDE
+.vscode/
+.idea/
