@@ -12,11 +12,13 @@ from .character import CharacterWindow
 from .chat import ChatWindow
 from .core.assistant import Assistant, OfflineResponder, ProviderResponder, Responder
 from .core.conversation import Conversation
+from .core.memory import MEMORY_FILENAME, MemoryStore
 from .core.personality import Personality
 from .expressions import ExpressionManager
+from .memory_menu import add_memory_menu
 from .providers import create_provider
 from .reactions import CharacterReactions
-from .settings.config import Config
+from .settings.config import Config, data_dir
 
 # Gap between the character and the chat panel when they sit side by side.
 CHAT_GAP = 12
@@ -132,15 +134,31 @@ def run() -> int:
     config = Config.load()
     personality = Personality.load(assets / "personality" / "alter_ego.json")
     conversation = Conversation()
+
+    # Persistent memory: restore the last conversation before any window is
+    # listening, so the old messages appear at once instead of being typed out.
+    memory = MemoryStore(data_dir() / MEMORY_FILENAME)
+    if config.memory_enabled:
+        restored = memory.restore(conversation)
+        memory.attach(conversation)
+        if restored:
+            print(f"Alter Ego: remembered {restored} message(s) from last time ({memory.path})")
+
     assistant = Assistant(personality, conversation, build_responder(config))
     print(f"Alter Ego: {assistant.responder.describe()} (settings: {config.path})")
 
     def apply_settings() -> None:
         assistant.set_responder(build_responder(config))
-        print(f"Alter Ego: now using {assistant.responder.describe()}")
+        if config.memory_enabled:
+            memory.attach(conversation)
+        else:
+            memory.detach()
+        print(f"Alter Ego: now using {assistant.responder.describe()}; memory {'on' if memory.recording else 'off'}")
 
-    # Stop any reply still streaming so the worker thread ends before the app does.
+    # Stop any reply still streaming so the worker thread ends before the app does,
+    # then save whatever was said and close the database.
     app.aboutToQuit.connect(assistant.cancel)
+    app.aboutToQuit.connect(memory.close)
 
     expressions = ExpressionManager(assets / "animations")
     character = CharacterWindow(expressions)
@@ -179,8 +197,12 @@ def run() -> int:
     character.activated.connect(toggle_chat)
     character.moved.connect(follow_character)
     chat.dragged.connect(undock)
-    # The character's right-click menu is rebuilt each time, so it asks for the AI menu here.
-    character.extra_menu_builder = lambda menu: add_ai_menu(menu, assistant, config, apply_settings)
+    # The character's right-click menu is rebuilt each time, so it asks for the shared submenus here.
+    def add_shared_menus(menu: QMenu) -> None:
+        add_ai_menu(menu, assistant, config, apply_settings)
+        add_memory_menu(menu, memory, assistant, config, apply_settings)
+
+    character.extra_menu_builder = add_shared_menus
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         print("Warning: no system tray available. Right-click Alter Ego to quit.")
@@ -192,7 +214,7 @@ def run() -> int:
     menu.addAction("Show Alter Ego", character.appear)
     menu.addAction("Hide Alter Ego", character.disappear)
     menu.addAction("Chat...", open_chat)
-    add_ai_menu(menu, assistant, config, apply_settings)
+    add_shared_menus(menu)
     menu.addSeparator()
     menu.addAction("Quit", app.quit)
     tray.setContextMenu(menu)

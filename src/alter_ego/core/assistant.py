@@ -22,6 +22,7 @@ import random
 import re
 import time
 import traceback
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Callable, Iterator, Protocol, Sequence
 
@@ -56,6 +57,11 @@ TAG_INSTRUCTION = (
 # If a reply starts with "[" but no "]" shows up within this many characters,
 # assume it is not a tag and show the text as-is.
 MAX_TAG_LENGTH = 24
+
+# Default for the "memory.context_messages" setting (see settings/config.py).
+DEFAULT_CONTEXT_MESSAGES = 30
+# After this long without talking, the next greeting is the "welcome back" one.
+RETURN_AFTER = timedelta(hours=1)
 
 
 def split_expression_tag(text: str) -> tuple[Expression | None, str, bool]:
@@ -256,11 +262,21 @@ class ProviderResponder:
         summary = self.provider.test_connection()
         return f"{summary} I'll be thinking with '{self.resolve_model()}'."
 
+    def context_limit(self) -> int:
+        """How many recent messages to send to the model. 0 means no limit."""
+        try:
+            return max(0, int(self._config.get("memory", "context_messages", DEFAULT_CONTEXT_MESSAGES)))
+        except (TypeError, ValueError):
+            return DEFAULT_CONTEXT_MESSAGES
+
     def build_messages(self, personality: Personality, history: Sequence[Message]) -> list[ChatMessage]:
         messages = [ChatMessage("system", personality.system_prompt + "\n\n" + TAG_INSTRUCTION)]
-        for message in history:
-            if not message.complete or not message.text:
-                continue
+        usable = [m for m in history if m.complete and m.text]
+        limit = self.context_limit()
+        if limit:
+            # With persistent memory the history can be months long; only the recent part goes to the model.
+            usable = usable[-limit:]
+        for message in usable:
             if message.role is Role.ASSISTANT:
                 # Show earlier replies with their tags so the model keeps the convention.
                 messages.append(ChatMessage("assistant", with_tag(message.expression, message.text)))
@@ -333,6 +349,7 @@ class Assistant(QObject):
         self._raw = ""                              # Everything received so far, tag included.
         self._reply: Message | None = None          # The message being streamed, once visible.
         self._failed = False
+        self._welcomed_back = False
         conversation.cleared.connect(lambda: self._responder.reset())
 
     @property
@@ -348,10 +365,23 @@ class Assistant(QObject):
         self._responder = responder
 
     def greet(self) -> None:
-        """Say hello once, when the conversation is still empty."""
+        """Say hello when the conversation is empty, or welcome the user back after a long pause.
+
+        The welcome-back line is said at most once per run, so reopening the
+        chat several times does not repeat it.
+        """
         if len(self.conversation) == 0:
             self.conversation.add(
                 Message(Role.ASSISTANT, self.personality.greeting, expression=Expression.SHY_TALK)
+            )
+            return
+        if self._welcomed_back or self._state is not AssistantState.IDLE:
+            return
+        last = self.conversation.messages[-1]
+        if datetime.now() - last.timestamp >= RETURN_AFTER:
+            self._welcomed_back = True
+            self.conversation.add(
+                Message(Role.ASSISTANT, self.personality.return_greeting, expression=Expression.HAPPY)
             )
 
     def send(self, text: str) -> bool:

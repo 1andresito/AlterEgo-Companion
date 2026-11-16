@@ -1,7 +1,8 @@
-"""In-memory conversation history shared by every way of talking to Alter Ego.
+"""The conversation history shared by every way of talking to Alter Ego.
 
-v0.3.0 keeps messages only while the app runs. Persistence (SQLite) arrives in
-v0.6.0 and will plug in underneath this class.
+This class only knows about the messages currently on screen. Saving them
+across restarts is done by core/memory.py, which listens to the signals below
+like any other observer.
 """
 
 from __future__ import annotations

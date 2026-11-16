@@ -8,6 +8,7 @@ it only calls Assistant.send() and listens to the Conversation.
 from __future__ import annotations
 
 import html
+from datetime import date, timedelta
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -71,6 +72,19 @@ QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
 QScrollBar::handle:vertical { background: #2f6d12; border-radius: 4px; min-height: 20px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 """
+
+
+def day_label(day: date) -> str:
+    """'today', 'yesterday', or something like 'Monday 10 November' (with the year if it differs)."""
+    today = date.today()
+    if day == today:
+        return "today"
+    if day == today - timedelta(days=1):
+        return "yesterday"
+    label = f"{day:%A} {day.day} {day:%B}"
+    if day.year != today.year:
+        label += f" {day.year}"
+    return label
 
 
 class ChatWindow(QWidget):
@@ -165,9 +179,7 @@ class ChatWindow(QWidget):
 
     def _clear(self) -> None:
         self._assistant.cancel()
-        self._type_timer.stop()
-        self._typing_message = None
-        self._conversation.clear()
+        self._conversation.clear()  # _on_cleared stops the typewriter.
 
     def _is_busy(self) -> bool:
         return self._assistant.state is not AssistantState.IDLE or self._typing_message is not None
@@ -206,6 +218,9 @@ class ChatWindow(QWidget):
         self._render()
 
     def _on_cleared(self) -> None:
+        # The chat can be cleared from the menus too, so the typewriter is stopped here, not in _clear().
+        self._type_timer.stop()
+        self._typing_message = None
         self._render()
         self._update_input_state()
 
@@ -233,8 +248,17 @@ class ChatWindow(QWidget):
         conversations grow very long this can be changed to append only the
         newest block.
         """
+        messages = self._conversation.messages
+        # With memory on, the history can span days; a divider marks where each day starts.
+        show_days = len({message.timestamp.date() for message in messages}) > 1
+        previous_day: date | None = None
+
         parts = []
-        for message in self._conversation.messages:
+        for message in messages:
+            day = message.timestamp.date()
+            if show_days and day != previous_day:
+                previous_day = day
+                parts.append(self._format_divider(day_label(day)))
             text = message.text
             if message is self._typing_message or not message.complete:
                 text = text[: self._typed_chars] + "▌"  # left half block = cursor
@@ -253,6 +277,13 @@ class ChatWindow(QWidget):
         return (
             f'<p style="margin:0 0 8px 0;">'
             f'<span style="color:{color}; font-weight:bold;">{speaker} &gt;</span> {body}</p>'
+        )
+
+    @staticmethod
+    def _format_divider(label: str) -> str:
+        return (
+            '<p style="margin:4px 0 8px 0; color:#4f8f30; text-align:center;">'
+            f"── {html.escape(label)} ──</p>"
         )
 
     # ----- Painting the CRT panel -----

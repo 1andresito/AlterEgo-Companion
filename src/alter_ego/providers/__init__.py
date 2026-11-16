@@ -29,10 +29,13 @@ def create_provider(provider_id: str, config: Config) -> Provider | None:
     if provider_id == OllamaProvider.id:
         return OllamaProvider(base_url=str(config.get("ollama", "base_url", "http://localhost:11434")))
     if provider_id == ClaudeCodeProvider.id:
+        working_dir = data_dir() / "claude_code"
         return ClaudeCodeProvider(
             command=str(config.get("claude_code", "command", "claude") or "claude"),
-            working_dir=data_dir() / "claude_code",
+            working_dir=working_dir,
             effort=str(config.get("claude_code", "effort", "") or ""),
+            # Resume the same Claude Code session after a restart, but only while memory is on.
+            session_file=working_dir / "session" if config.memory_enabled else None,
         )
     if provider_id == OpenAICompatibleProvider.id:
         return OpenAICompatibleProvider(

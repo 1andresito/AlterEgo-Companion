@@ -47,12 +47,16 @@ class ClaudeCodeProvider(Provider):
         command: str | Sequence[str] = DEFAULT_COMMAND,
         working_dir: Path | None = None,
         effort: str = "",
+        session_file: Path | None = None,
     ):
         # `command` is normally "claude"; tests pass a list such as [python, fake_script].
         self._command = list(command) if not isinstance(command, str) else command
         self._working_dir = working_dir
         self._effort = effort
-        self._session_id: str | None = None
+        # With persistent memory on, the session id is kept in a small file so the
+        # conversation can be resumed after Alter Ego restarts.
+        self._session_file = session_file
+        self._session_id: str | None = _read_session_file(session_file)
 
     # ----- Provider interface -----
 
@@ -73,7 +77,20 @@ class ClaudeCodeProvider(Provider):
 
     def reset(self) -> None:
         """Forget the current Claude Code session (called when the chat is cleared)."""
-        self._session_id = None
+        self._set_session(None)
+
+    def _set_session(self, session_id: str | None) -> None:
+        self._session_id = session_id
+        if self._session_file is None:
+            return
+        try:
+            if session_id is None:
+                self._session_file.unlink(missing_ok=True)
+            else:
+                self._session_file.parent.mkdir(parents=True, exist_ok=True)
+                self._session_file.write_text(session_id, encoding="utf-8")
+        except OSError as error:
+            print(f"Warning: could not update {self._session_file}: {error}")
 
     def stream_reply(
         self,
@@ -91,7 +108,7 @@ class ClaudeCodeProvider(Provider):
         try:
             yield from self._stream_once(prompt, system_prompt, model, session_id, resuming, cancelled)
         except ProviderError:
-            self._session_id = None
+            self._set_session(None)
             if not resuming:
                 raise
             # The old session may have been deleted or compacted away; start a fresh one.
@@ -219,7 +236,24 @@ class ClaudeCodeProvider(Provider):
             raise ProviderError(_explain_failure(result, process.returncode, noise))
         if not streamed_any and result.get("result"):
             yield str(result["result"])  # Older CLI without deltas: the whole reply at once.
-        self._session_id = session_id
+        self._set_session(session_id)
+
+
+def _read_session_file(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        session_id = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        print(f"Warning: could not read {path}: {error}")
+        return None
+    # Only a UUID is ever written; anything else means the file was tampered with or is broken.
+    try:
+        return str(uuid.UUID(session_id))
+    except ValueError:
+        return None
 
 
 def _resolve_executable(command: str) -> str | None:

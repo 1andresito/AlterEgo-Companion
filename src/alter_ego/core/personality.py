@@ -19,6 +19,8 @@ class Personality:
     traits: tuple[str, ...]
     greeting: str
     system_prompt: str
+    # Said when the chat reopens after a long pause with earlier messages still remembered.
+    return_greeting: str = "Oh, you're back! I kept everything we talked about."
 
     @classmethod
     def default(cls) -> Personality:
@@ -61,4 +63,5 @@ class Personality:
             traits=tuple(str(trait) for trait in data.get("traits", fallback.traits)),
             greeting=str(data.get("greeting", fallback.greeting)),
             system_prompt=str(prompt),
+            return_greeting=str(data.get("return_greeting", fallback.return_greeting)),
         )

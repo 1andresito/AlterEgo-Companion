@@ -36,6 +36,10 @@ DEFAULTS: dict[str, Any] = {
         "api_key": "",                            # or set the OPENAI_API_KEY environment variable
         "model": "",
     },
+    "memory": {
+        "enabled": True,         # save conversations to data/memory.db and restore them on start
+        "context_messages": 30,  # how many recent messages the AI sees; 0 = all of them
+    },
 }
 
 
@@ -99,6 +103,10 @@ class Config:
     @provider.setter
     def provider(self, provider_id: str) -> None:
         self._data["provider"] = provider_id
+
+    @property
+    def memory_enabled(self) -> bool:
+        return bool(self.get("memory", "enabled", True))
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
         values = self._data.get(section)
