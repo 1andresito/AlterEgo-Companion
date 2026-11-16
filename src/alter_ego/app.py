@@ -19,6 +19,12 @@ from .memory_menu import add_memory_menu
 from .providers import create_provider
 from .reactions import CharacterReactions
 from .settings.config import Config, data_dir
+from .speech import build_transcriber, build_wake_transcriber
+from .speech.controller import ListeningState, PushToTalk
+from .speech.handsfree import HandsFree
+from .speech.hotkey import PushToTalkKey
+from .speech.recorder import MicrophoneRecorder
+from .voice_menu import add_voice_menu
 
 # Gap between the character and the chat panel when they sit side by side.
 CHAT_GAP = 12
@@ -147,23 +153,87 @@ def run() -> int:
     assistant = Assistant(personality, conversation, build_responder(config))
     print(f"Alter Ego: {assistant.responder.describe()} (settings: {config.path})")
 
+    # Push to talk: a global key (or the chat's talk button) records, a speech engine transcribes.
+    recorder = MicrophoneRecorder(str(config.get("speech", "microphone", "") or ""))
+    push_to_talk = PushToTalk(recorder, build_transcriber(config))
+    hotkey = PushToTalkKey(str(config.get("speech", "push_to_talk_key", "F9") or "F9"))
+    hotkey.pressed.connect(push_to_talk.start)
+    hotkey.released.connect(push_to_talk.stop)
+
+    # Hands-free: its own microphone stream, paused while the push-to-talk key is held.
+    hands_free_recorder = MicrophoneRecorder(str(config.get("speech", "microphone", "") or ""))
+    hands_free = HandsFree(hands_free_recorder)
+    # Printed so a miss can be diagnosed from the terminal: was it not heard, or heard wrong?
+    hands_free.heard.connect(
+        lambda text, matched: print(f"Hands-free heard: {text!r} -> {'wake phrase' if matched else 'no match'}")
+    )
+
+    def on_push_to_talk_state(state: ListeningState) -> None:
+        if state is ListeningState.LISTENING:
+            hands_free.pause()
+        elif state is ListeningState.IDLE:
+            hands_free.resume()
+
+    push_to_talk.state_changed.connect(on_push_to_talk_state)
+
+    def number(key: str, default: float) -> float:
+        try:
+            return float(config.get("speech", key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def apply_speech_settings() -> None:
+        device = str(config.get("speech", "microphone", "") or "")
+        recorder.set_device(device)
+        hands_free_recorder.set_device(device)
+        transcriber = build_transcriber(config)
+        push_to_talk.set_transcriber(transcriber)
+        hotkey.set_key(str(config.get("speech", "push_to_talk_key", "F9") or "F9"))
+        if config.speech_enabled:
+            hotkey.start()
+        else:
+            hotkey.stop()
+        chat.review_before_sending = bool(config.get("speech", "review_before_sending", False))
+
+        hands_free.stop()
+        hands_free.set_phrase(str(config.get("speech", "wake_phrase", "") or ""))
+        hands_free.set_timings(number("awake_seconds", 3), number("follow_up_seconds", 3))
+        hands_free.set_sensitivity(str(config.get("speech", "wake_sensitivity", "normal") or "normal"))
+        hands_free.set_transcribers(build_wake_transcriber(config, transcriber), transcriber)
+        if config.hands_free_enabled:
+            hands_free.start()
+
     def apply_settings() -> None:
         assistant.set_responder(build_responder(config))
         if config.memory_enabled:
             memory.attach(conversation)
         else:
             memory.detach()
-        print(f"Alter Ego: now using {assistant.responder.describe()}; memory {'on' if memory.recording else 'off'}")
+        apply_speech_settings()
+        transcriber = push_to_talk.transcriber
+        print(
+            f"Alter Ego: now using {assistant.responder.describe()}; memory {'on' if memory.recording else 'off'}; "
+            f"push to talk {transcriber.describe() if transcriber else 'off'}; "
+            f"hands-free {'on' if hands_free.active else 'off'}"
+        )
 
     # Stop any reply still streaming so the worker thread ends before the app does,
     # then save whatever was said and close the database.
     app.aboutToQuit.connect(assistant.cancel)
+    app.aboutToQuit.connect(push_to_talk.cancel)
+    app.aboutToQuit.connect(hands_free.stop)
     app.aboutToQuit.connect(memory.close)
 
     expressions = ExpressionManager(assets / "animations")
     character = CharacterWindow(expressions)
-    chat = ChatWindow(assistant)
-    reactions = CharacterReactions(expressions, assistant, chat)  # noqa: F841 (kept alive by reference)
+    chat = ChatWindow(assistant, push_to_talk, hands_free)
+    reactions = CharacterReactions(expressions, assistant, chat, push_to_talk, hands_free)  # noqa: F841 (kept alive by reference)
+    chat.typing_finished.connect(hands_free.reply_finished)
+    apply_speech_settings()
+    if push_to_talk.transcriber is not None:
+        print(f"Alter Ego: push to talk with {push_to_talk.transcriber.describe()}, hold {hotkey.name}")
+    if hands_free.active:
+        print(f'Alter Ego: hands-free on, say "{hands_free.phrase}"')
 
     # Start near the upper-right corner instead of covering the center of the screen.
     screen = app.primaryScreen()
@@ -197,9 +267,27 @@ def run() -> int:
     character.activated.connect(toggle_chat)
     character.moved.connect(follow_character)
     chat.dragged.connect(undock)
+
+    # Holding the key with the chat hidden opens it, so the user sees what was heard.
+    def show_chat_when_listening(state: ListeningState) -> None:
+        if state is ListeningState.LISTENING and not chat.isVisible():
+            open_chat()
+
+    push_to_talk.state_changed.connect(show_chat_when_listening)
+
+    # "Hey Alter Ego" while hidden in the tray: come back on screen and open the chat.
+    def wake_up() -> None:
+        if not character.isVisible():
+            character.appear()
+        if not chat.isVisible():
+            open_chat()
+
+    hands_free.woke.connect(wake_up)
+
     # The character's right-click menu is rebuilt each time, so it asks for the shared submenus here.
     def add_shared_menus(menu: QMenu) -> None:
         add_ai_menu(menu, assistant, config, apply_settings)
+        add_voice_menu(menu, push_to_talk, assistant, config, apply_settings)
         add_memory_menu(menu, memory, assistant, config, apply_settings)
 
     character.extra_menu_builder = add_shared_menus

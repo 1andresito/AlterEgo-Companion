@@ -2,7 +2,7 @@
 
 An open-source desktop companion built with Python and PySide6, inspired by the digital character Alter Ego from Danganronpa.
 
-**Current version: v0.4.0 — persistent memory.** Alter Ego lives on your desktop inside a green CRT monitor, opens a chat panel when you click it, and talks to you through the AI of your choice: a local model via [Ollama](https://ollama.com), **Claude through your existing Claude Code login (no API key)**, or any OpenAI-compatible API (ChatGPT, Groq, LM Studio, ...). Replies stream in word by word, and the character's face follows the mood of what it says. Conversations are now saved locally, so Alter Ego picks up where you left off after a restart (see [Memory](#memory)). Voice is planned for the next versions (see [Roadmap](#roadmap)).
+**Current version: v0.5.0 — voice input.** Alter Ego lives on your desktop inside a green CRT monitor, opens a chat panel when you click it, and talks to you through the AI of your choice: a local model via [Ollama](https://ollama.com), **Claude through your existing Claude Code login (no API key)**, or any OpenAI-compatible API (ChatGPT, Groq, LM Studio, ...). Replies stream in word by word, and the character's face follows the mood of what it says. Conversations are saved locally, so Alter Ego picks up where you left off after a restart (see [Memory](#memory)). And now you can talk: **hold F9 and speak**, or switch on hands-free mode and just say **"Hey Alter Ego"**, even while it is hidden in the tray. Speech is recognised on your own computer with Whisper (see [Push to talk](#push-to-talk) and [Hands-free](#hands-free)). Spoken replies are planned next (see [Roadmap](#roadmap)).
 
 > Without any provider, Alter Ego falls back to a small set of in-character "offline" lines, so the app always runs.
 
@@ -14,6 +14,8 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 - Click Alter Ego to open a CRT-styled chat panel with message history and a text input.
 - Three AI providers, switchable from the menu: Ollama (local), Claude via Claude Code (your subscription, no key), OpenAI-compatible APIs (your key).
 - Replies stream in as they are generated; the window never freezes.
+- Push to talk: hold **F9** anywhere in Windows (or the **talk** button in the chat), speak, release. The words are recognised locally with Whisper and sent as a message. The key, microphone, engine and model are chosen from the **Voice** menu.
+- Hands-free (opt-in): say **"Hey Alter Ego"** and the character appears, listens for what you want, answers, and keeps listening a few seconds for a follow-up. The wake phrase is detected locally; no audio leaves the computer and none is stored.
 - Persistent memory: the conversation is saved in a local SQLite file and restored on the next start, with day dividers in the chat and a "welcome back" line after a long pause. Switch it off or wipe it from the **Memory** menu.
 - With Claude via Claude Code, the Claude session is resumed after a restart too, so Claude remembers as much as the chat panel shows.
 - The AI chooses an expression for each reply; the character's face follows (thinking → reply expression → back to idle).
@@ -36,6 +38,7 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 - Windows 10 or 11 (initial target)
 - Python 3.10+
 - A working desktop session
+- For push to talk: a microphone. `requirements.txt` includes [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local speech recognition; the first use downloads the speech model (about 150 MB for `base`). Everything else works without it.
 
 ## Run from source
 
@@ -113,11 +116,27 @@ If Ollama is on another machine or port, change `base_url` under `ollama` in the
   "ollama":      { "base_url": "http://localhost:11434", "model": "" },
   "claude_code": { "command": "claude", "model": "", "effort": "" },
   "openai":      { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "" },
-  "memory":      { "enabled": true, "context_messages": 30 }
+  "memory":      { "enabled": true, "context_messages": 30 },
+  "speech": {
+    "enabled": true,
+    "push_to_talk_key": "F9",
+    "microphone": "",
+    "transcriber": "whisper",
+    "whisper_model": "base",
+    "openai_model": "whisper-1",
+    "language": "",
+    "review_before_sending": false,
+    "hands_free": false,
+    "wake_phrase": "hey alter ego",
+    "wake_model": "tiny",
+    "wake_sensitivity": "normal",
+    "awake_seconds": 3,
+    "follow_up_seconds": 3
+  }
 }
 ```
 
-`provider` is one of `offline`, `ollama`, `claude_code`, `openai`. An empty `model` means "the first one available". The `memory` keys are explained under [Memory](#memory).
+`provider` is one of `offline`, `ollama`, `claude_code`, `openai`. An empty `model` means "the first one available". The `memory` keys are explained under [Memory](#memory) and the `speech` keys under [Push to talk](#push-to-talk).
 
 ## Controls
 
@@ -126,6 +145,9 @@ If Ollama is on another machine or port, change `base_url` under `ollama` in the
 | Move | Left-click and drag Alter Ego |
 | Open / close chat | Left-click Alter Ego (without dragging), or right-click → **Chat...**, or tray menu → **Chat...** |
 | Send a message | Type in the chat panel and press **Enter** or click **send** |
+| Talk instead of typing | Hold **F9** (works in any window), speak, release. Or hold the **talk** button in the chat panel. |
+| Change the talk key, microphone or speech engine | Right-click Alter Ego → **Voice** |
+| Talk without touching anything | **Voice** → **Hands-free**, then say "Hey Alter Ego" followed by your request |
 | Clear the conversation | **clear** in the chat panel header (the old conversation stays in memory on disk, it is just no longer shown) |
 | Turn memory on or off | Right-click Alter Ego → **Memory** → **Remember conversations** |
 | Wipe all memory | **Memory** → **Forget everything...** (asks for confirmation) |
@@ -136,6 +158,43 @@ If Ollama is on another machine or port, change `base_url` under `ollama` in the
 | Change size | Right-click Alter Ego → **Size** |
 | Hide / show | Left-click the tray icon, or use either menu (with a burst of static) |
 | Quit | Right-click menu or tray menu → **Quit** |
+
+## Push to talk
+
+Hold the talk key, say something, let go. Alter Ego opens the chat if it was hidden, shows "Listening..." while the key is down, recognises the words and sends them as if you had typed them. The character looks attentive while listening and thinks while recognising.
+
+- **Key:** F9 by default. Change it under **Voice** → **Key** (function keys, Pause, Scroll Lock, the numpad, right Ctrl/Alt/Shift, or a mouse side button). The key is watched system-wide on Windows, so it works while you are in a game or an editor. Presses shorter than half a second are ignored; a recording stops by itself after 60 seconds.
+- **Microphone:** the Windows default, or pick one under **Voice** → **Microphone**. Audio is captured with Qt, nothing is written to disk, and the microphone is open only while the key is held.
+- **Engine, local (default):** [faster-whisper](https://github.com/SYSTRAN/faster-whisper), OpenAI's Whisper running on your CPU. Install it with `pip install -r requirements.txt`. The first use downloads the model into the Hugging Face cache (`%USERPROFILE%\.cache\huggingface`); use **Voice** → **Prepare speech recognition** to do that ahead of time. **Voice** → **Whisper model** picks the size: `tiny` is fastest, `base` (default) is a good balance, `small` is noticeably more accurate, `medium` and `large-v3` are slow without a GPU. The `.en` variants are English-only and a bit better at it.
+- **Engine, API:** **Voice** → **Speech recognition** → **OpenAI-compatible API** sends the recording to `/audio/transcriptions` at the `base_url` from the `openai` section with that API key (OpenAI's `whisper-1`; set `openai_model` to `whisper-large-v3` for Groq). Your voice leaves the computer in that case.
+- **Language:** detected automatically. Set `language` in the settings file to a code such as `en` or `es` for faster and more reliable results.
+- **Review before sending:** with this on under **Voice**, the recognised text lands in the input box so you can fix it before pressing Enter. It also lands there whenever Alter Ego is still busy replying.
+- If the speech package is missing, the microphone cannot be opened, or nothing could be made out, Alter Ego says so in the chat.
+
+## Hands-free
+
+Switch it on under **Voice** → **Hands-free (say "Hey Alter Ego")**. It is off by default because it keeps the microphone open while Alter Ego runs, including when it is hidden in the tray.
+
+How it works, all on your computer:
+
+1. A small loudness detector splits the microphone stream into utterances (something said between two pauses). Silence and background noise are discarded immediately; nothing is recorded to disk.
+2. Each utterance is transcribed with the small, fast `tiny` Whisper model (`wake_model`), told to expect the phrase and to use your `language` (English if unset), and compared with the wake phrase. The match is forgiving: "Altar Ego", "Ultra Ego", "AlterEgo" and "um, hey Alter Ego" all count. Nothing else that is said while waiting is kept or shown.
+3. On a match Alter Ego appears (with its static burst, if it was hidden), opens the chat and shows "I'm listening...". What you say next is recognised with your main engine and sent. If you say nothing for `awake_seconds` (3 by default) it stops listening and waits for the wake phrase again; the countdown only runs while you are silent, so a long sentence is never cut short. "Hey Alter Ego, what time is it" in one breath works too.
+4. After the reply, it keeps listening for more without the wake phrase until you have been silent for `follow_up_seconds` (3 by default). Set it to `0` to require the wake phrase every time.
+
+Notes:
+
+- Hands-free needs the local Whisper package. The wake phrase is always checked locally, even when your main engine is an API; only the command after it goes to the API in that case.
+- Holding the push-to-talk key pauses hands-free until you let go, so both can be on at once.
+- `wake_phrase` can be anything short, for example `"computer"`. If the main Whisper model is the same as `wake_model`, only one model is loaded.
+- Expect some CPU use whenever people are talking near the microphone, since every utterance is checked. If it wakes by mistake, the awake window simply times out.
+
+If it does not respond when you say the phrase, run Alter Ego from a terminal (`python main.py`): every wake check is printed as `Hands-free heard: '...' -> no match` or `-> wake phrase`.
+
+- **Nothing is printed when you speak:** the microphone did not pick you up as speech. Choose **Voice** → **Wake sensitivity** → **High**, check that **Voice** → **Microphone** is the right device, and raise the microphone level in Windows sound settings.
+- **Something is printed but wrong** (for example `'hey, all to go'`): the small model misheard. Try `"wake_model": "base"` in the settings file (slower per check, better ears), set `"language"` to your language, or pick a wake phrase with longer, more distinct words.
+- **Printed as the phrase but nothing happens:** it did wake, and the 3-second silence window closed before you spoke. Say your request straight after the phrase, or raise `awake_seconds`.
+- If recognition fails (for example the package is missing), hands-free switches itself off and says why, instead of repeating the error for every sound.
 
 ## Memory
 
@@ -210,10 +269,11 @@ AlterEgo-Companion/
 │       ├── app.py            # Starts the app, wires everything together, tray icon
 │       ├── ai_menu.py        # "AI" submenu: provider, model, test connection
 │       ├── memory_menu.py    # "Memory" submenu: on/off, what is stored, forget everything
+│       ├── voice_menu.py     # "Voice" submenu: push to talk on/off, key, microphone, engine
 │       ├── character.py      # Desktop window: drawing, effects, dragging, menus
-│       ├── chat.py           # Chat panel: history, day dividers, input, typewriter reveal
+│       ├── chat.py           # Chat panel: history, day dividers, input, talk button, typewriter
 │       ├── expressions.py    # Expression list + ExpressionManager
-│       ├── reactions.py      # Makes the face follow the conversation
+│       ├── reactions.py      # Makes the face follow the conversation and the microphone
 │       ├── core/             # No UI in here
 │       │   ├── personality.py    # Loads the personality JSON
 │       │   ├── conversation.py   # Message + Conversation history
@@ -224,11 +284,24 @@ AlterEgo-Companion/
 │       │   ├── ollama.py         # Ollama over HTTP
 │       │   ├── claude_code.py    # Claude via the `claude -p` command (your login)
 │       │   └── openai_compat.py  # OpenAI-style /chat/completions (SSE streaming)
+│       ├── speech/           # Voice input
+│       │   ├── audio.py          # AudioClip: raw microphone PCM -> 16 kHz mono samples, WAV export
+│       │   ├── recorder.py       # MicrophoneRecorder (Qt Multimedia)
+│       │   ├── hotkey.py         # The global push-to-talk key (Windows key polling)
+│       │   ├── controller.py     # PushToTalk: hold -> record -> recognise on a worker thread
+│       │   ├── vad.py            # UtteranceDetector: cuts a live stream into utterances by loudness
+│       │   ├── wake.py           # Fuzzy matching of the wake phrase in a transcript
+│       │   ├── handsfree.py      # HandsFree: wait for the phrase -> awake -> command -> follow-up
+│       │   ├── transcriber.py    # Transcriber interface + TranscriptionError
+│       │   ├── whisper_local.py  # faster-whisper, offline
+│       │   └── openai_stt.py     # /audio/transcriptions on an OpenAI-compatible API
 │       └── settings/
 │           └── config.py         # Loads/saves data/config.json
 ├── tests/
 │   ├── test_core.py
 │   ├── test_memory.py        # Memory store, context trimming, welcome-back, session file
+│   ├── test_speech.py        # Audio conversion, key names, API engine, push-to-talk states
+│   ├── test_handsfree.py     # Utterance detector, wake-phrase matching, hands-free states
 │   ├── test_providers.py     # Providers against fake servers and a fake `claude`
 │   └── fake_claude.py        # Stand-in for the Claude Code command
 ├── main.py                   # Entry point: python main.py
@@ -245,6 +318,8 @@ How the pieces talk to each other (all through Qt signals, so modules stay indep
 4. As pieces arrive, the `Assistant` strips the leading expression tag, adds the reply to the `Conversation` and keeps updating its text (`message_updated`).
 5. The chat panel types the growing text out; `CharacterReactions` sets the face as soon as the tag is known; when typing finishes it waits a few seconds and returns the face to Happy.
 6. The `MemoryStore` listens to the same `Conversation` signals: it inserts each new message, writes a streamed reply once when it is complete, and marks the conversation as ended when the chat is cleared. At start-up it loads the last conversation into the `Conversation` before the windows are connected.
+7. Voice comes in from the side: the global key (or the talk button) calls `PushToTalk.start()`/`stop()`. The controller records through the `MicrophoneRecorder`, runs the `Transcriber` on a worker thread and emits the text; the chat panel then calls `Assistant.send(text)`, exactly as if it had been typed. `CharacterReactions` listens to the same state signal for the listening face.
+8. `HandsFree` uses the recorder in streaming mode, feeds the `UtteranceDetector`, checks each utterance against the wake phrase with the small model, and emits `woke` (the app shows the character and chat) and then `command(text)`, which the chat panel sends the same way. The chat's `typing_finished` tells it when a reply is over, so it can open the follow-up window.
 
 Adding another backend means writing one `Provider` subclass in `providers/` and registering it in `providers/__init__.py`. Nothing else changes.
 
@@ -254,7 +329,7 @@ Adding another backend means writing one `Provider` subclass in `providers/` and
 python -m unittest discover -s tests -v
 ```
 
-The tests cover the non-visual parts: personality and config loading, conversation history, expression-tag parsing and reply clean-up, the assistant's streaming send/reply cycle (including failures and cancellation), the memory store (saving, restoring, clearing, forgetting), context trimming, and all three providers against fakes (a fake Ollama server, a fake OpenAI server and a fake `claude` command). They need neither Ollama, Claude Code nor an API key, and they write only to temporary folders.
+The tests cover the non-visual parts: personality and config loading, conversation history, expression-tag parsing and reply clean-up, the assistant's streaming send/reply cycle (including failures and cancellation), the memory store (saving, restoring, clearing, forgetting), context trimming, audio conversion, the utterance detector, wake-phrase matching, the push-to-talk and hands-free state machines with a fake microphone and engines, the API speech engine against a fake server, and all three providers against fakes (a fake Ollama server, a fake OpenAI server and a fake `claude` command). They need neither Ollama, Claude Code, an API key, a microphone nor the Whisper package, and they write only to temporary folders.
 
 ## Build a Windows executable
 
@@ -276,14 +351,15 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 - [x] v0.3.0: Provider framework, Ollama, streaming replies, AI-chosen expressions
 - [x] v0.3.1: Claude via Claude Code login, OpenAI-compatible APIs
 - [x] v0.4.0: Persistent memory (conversations survive restarts, Memory menu)
-- [ ] v0.5.0: Local wake-word detection and push-to-talk
-- [ ] v0.6.0: Speech recognition and text-to-speech
+- [x] v0.5.0: Voice input: push to talk and hands-free "Hey Alter Ego", with local speech recognition (Whisper) or an API
+- [ ] v0.6.0: Text-to-speech, so Alter Ego answers out loud
 - [ ] v0.7.0: Scheduled updates and notifications
 - [ ] Later: long-term recall of older conversations
 
 ## Privacy
 
-- **Microphone:** not used. Voice features will arrive later with explicit controls.
+- **Microphone:** by default opened only while the push-to-talk key or the talk button is held, and closed the moment you let go. No audio files are written to disk. With the default local engine the recording never leaves your computer; with the API engine it is uploaded to the service at `base_url`. Switch voice input off entirely under **Voice** → **Push to talk**.
+  - **Hands-free** (off by default) keeps the microphone open while the app runs. Audio is analysed in memory and discarded; only after the wake phrase is heard is the next thing you say treated as a message. The wake-phrase check is always local. See [Hands-free](#hands-free).
 - **Network:** depends on the provider you choose, and nothing is sent anywhere else.
   - *Offline:* no network at all.
   - *Ollama:* your messages, the conversation history and the personality prompt go to the Ollama server in your settings (`http://localhost:11434` by default, your own computer).

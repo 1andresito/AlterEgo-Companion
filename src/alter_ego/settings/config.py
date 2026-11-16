@@ -40,6 +40,22 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,         # save conversations to data/memory.db and restore them on start
         "context_messages": 30,  # how many recent messages the AI sees; 0 = all of them
     },
+    "speech": {
+        "enabled": True,                # push to talk: hold the key (or the chat's talk button) to speak
+        "push_to_talk_key": "F9",       # see Voice -> Key in the menu for the names
+        "microphone": "",               # "" = system default, otherwise a device name from Voice -> Microphone
+        "transcriber": "whisper",       # "whisper" = local and offline, "openai" = the API from the openai section
+        "whisper_model": "base",        # tiny, base, small, medium, large-v3, or an English-only ".en" variant
+        "openai_model": "whisper-1",    # the API's speech model (Groq: whisper-large-v3)
+        "language": "",                 # "" = detect automatically, or a code such as "en", "es", "ja"
+        "review_before_sending": False, # True = put the text in the input box instead of sending it at once
+        "hands_free": False,            # keep the microphone open and wake up on the wake phrase (opt-in)
+        "wake_phrase": "hey alter ego",
+        "wake_model": "tiny",           # the small Whisper model that listens for the wake phrase
+        "wake_sensitivity": "normal",   # "low", "normal" or "high": how quiet speech may be and still be noticed
+        "awake_seconds": 3,             # seconds of silence after the wake phrase before it stops listening
+        "follow_up_seconds": 3,         # seconds of silence after a reply before it stops listening; 0 = none
+    },
 }
 
 
@@ -107,6 +123,14 @@ class Config:
     @property
     def memory_enabled(self) -> bool:
         return bool(self.get("memory", "enabled", True))
+
+    @property
+    def speech_enabled(self) -> bool:
+        return bool(self.get("speech", "enabled", True))
+
+    @property
+    def hands_free_enabled(self) -> bool:
+        return self.speech_enabled and bool(self.get("speech", "hands_free", False))
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
         values = self._data.get(section)

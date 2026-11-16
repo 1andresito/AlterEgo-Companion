@@ -24,6 +24,12 @@ from PySide6.QtWidgets import (
 
 from .core.assistant import Assistant, AssistantState
 from .core.conversation import Conversation, Message, Role
+from .expressions import Expression
+from .speech.controller import ListeningState, PushToTalk
+from .speech.handsfree import HandsFree
+
+# How long a short voice hint ("I didn't catch that") stays in the input box.
+HINT_MS = 3000
 
 CHAT_WIDTH = 380
 CHAT_HEIGHT = 320
@@ -93,11 +99,24 @@ class ChatWindow(QWidget):
     # A reply has finished its typewriter reveal.
     typing_finished = Signal()
 
-    def __init__(self, assistant: Assistant):
+    def __init__(
+        self,
+        assistant: Assistant,
+        push_to_talk: PushToTalk | None = None,
+        hands_free: HandsFree | None = None,
+    ):
         super().__init__()
         self._assistant = assistant
         self._conversation: Conversation = assistant.conversation
         self._name = assistant.personality.name
+        self._push_to_talk = push_to_talk
+        # True: recognised speech goes into the input box for checking instead of being sent at once.
+        self.review_before_sending = False
+        self._voice_status = ""  # Shown as the input placeholder while listening/recognising.
+        self._hint_timer = QTimer(self)
+        self._hint_timer.setSingleShot(True)
+        self._hint_timer.setInterval(HINT_MS)
+        self._hint_timer.timeout.connect(lambda: self._set_voice_status(""))
 
         self.setWindowTitle(f"{self._name} - Chat")
         self.setWindowFlags(
@@ -124,6 +143,19 @@ class ChatWindow(QWidget):
         self._conversation.message_updated.connect(self._on_message_updated)
         self._conversation.cleared.connect(self._on_cleared)
         assistant.state_changed.connect(lambda _state: self._update_input_state())
+        if push_to_talk is not None:
+            push_to_talk.state_changed.connect(self._on_listening_changed)
+            push_to_talk.status.connect(self._set_voice_status)
+            push_to_talk.transcribed.connect(self._on_transcribed)
+            push_to_talk.failed.connect(lambda message: self._say(message, Expression.SWEAT_TALK))
+            push_to_talk.prepared.connect(lambda message: self._say(message, Expression.PASSION_TALK))
+        else:
+            self._talk_button.hide()
+        if hands_free is not None:
+            # Hands-free commands take the same path as push-to-talk text.
+            hands_free.status.connect(self._set_voice_status)
+            hands_free.command.connect(self._on_transcribed)
+            hands_free.failed.connect(lambda message: self._say(message, Expression.SWEAT_TALK))
         self._render()
         self._update_input_state()
 
@@ -166,6 +198,14 @@ class ChatWindow(QWidget):
         self._input.returnPressed.connect(self._send)
         input_row.addWidget(self._input, stretch=1)
 
+        # Hold to talk. pressed/released (not clicked) so the recording lasts as long as the hold.
+        self._talk_button = QPushButton("talk")
+        self._talk_button.setToolTip("Hold to talk")
+        self._talk_button.setAutoRepeat(False)
+        self._talk_button.pressed.connect(self._talk_pressed)
+        self._talk_button.released.connect(self._talk_released)
+        input_row.addWidget(self._talk_button)
+
         self._send_button = QPushButton("send")
         self._send_button.clicked.connect(self._send)
         input_row.addWidget(self._send_button)
@@ -188,7 +228,9 @@ class ChatWindow(QWidget):
         busy = self._is_busy()
         self._input.setEnabled(not busy)
         self._send_button.setEnabled(not busy)
-        if self._assistant.state is AssistantState.THINKING:
+        if self._voice_status:
+            self._input.setPlaceholderText(self._voice_status)
+        elif self._assistant.state is AssistantState.THINKING:
             self._input.setPlaceholderText(f"{self._name} is thinking...")
         elif busy:
             self._input.setPlaceholderText(f"{self._name} is talking...")
@@ -196,6 +238,44 @@ class ChatWindow(QWidget):
             self._input.setPlaceholderText("Say something...")
             if self.isVisible():
                 self._input.setFocus()
+
+    # ----- Voice -----
+
+    def _talk_pressed(self) -> None:
+        if self._push_to_talk is not None:
+            self._push_to_talk.start()
+
+    def _talk_released(self) -> None:
+        if self._push_to_talk is not None:
+            self._push_to_talk.stop()
+
+    def _on_listening_changed(self, state: ListeningState) -> None:
+        labels = {ListeningState.LISTENING: "● rec", ListeningState.TRANSCRIBING: "..."}
+        self._talk_button.setText(labels.get(state, "talk"))
+
+    def _set_voice_status(self, text: str) -> None:
+        self._hint_timer.stop()
+        self._voice_status = text
+        self._update_input_state()
+
+    def _show_hint(self, text: str) -> None:
+        """A short note in the input box that clears itself."""
+        self._set_voice_status(text)
+        self._hint_timer.start()
+
+    def _on_transcribed(self, text: str) -> None:
+        if not text:
+            self._show_hint("I didn't catch any words. Try again?")
+            return
+        # Sending fails while a reply is in progress; the text then waits in the box.
+        if self.review_before_sending or not self._assistant.send(text):
+            self._input.setText(text)
+            self._input.setFocus()
+            self._input.end(False)
+
+    def _say(self, text: str, expression: Expression) -> None:
+        """Have Alter Ego report something (an error, a result) in the chat, in character."""
+        self._conversation.add(Message(Role.ASSISTANT, text, expression=expression))
 
     # ----- Rendering the history -----
 
