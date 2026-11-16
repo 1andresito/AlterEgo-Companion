@@ -1,10 +1,16 @@
 """Ollama provider: local models served by https://ollama.com.
 
 Talks to Ollama's HTTP API with the standard library only, so it adds no
-dependency. Two endpoints are used:
+dependency. Three endpoints are used:
 
   GET  /api/tags   -> installed models
   POST /api/chat   -> chat completion, streamed as one JSON object per line
+  POST /api/pull   -> download a model, progress streamed the same way
+
+Alter Ego also looks after the server (see ollama_server.py): when Ollama is
+chosen it starts `ollama serve` if nothing answers locally, and before the
+first reply it downloads a default model if none is installed, so a fresh
+Ollama install works without a terminal.
 """
 
 from __future__ import annotations
@@ -16,21 +22,74 @@ import urllib.request
 from typing import Callable, Iterator
 
 from .base import ChatMessage, Provider, ProviderError
+from .ollama_server import DEFAULT_COMMAND, is_local, ollama_server
 
 DEFAULT_BASE_URL = "http://localhost:11434"
+DEFAULT_MODEL = "llama3.2"  # Small, general, about 2 GB: what the README suggests for chatting.
 CONNECT_TIMEOUT_S = 10
 STREAM_TIMEOUT_S = 120
+PULL_TIMEOUT_S = 600  # Between progress lines, not for the whole download.
 
 
 class OllamaProvider(Provider):
     id = "ollama"
     label = "Ollama (local)"
 
-    def __init__(self, base_url: str = DEFAULT_BASE_URL):
+    def __init__(
+        self,
+        base_url: str = DEFAULT_BASE_URL,
+        command: str | list[str] = DEFAULT_COMMAND,
+        auto_start: bool = True,
+        auto_pull: bool = True,
+        default_model: str = DEFAULT_MODEL,
+    ):
         self.base_url = base_url.rstrip("/")
+        self.command = command
+        self.auto_start = auto_start
+        self.auto_pull = auto_pull
+        self.default_model = default_model or DEFAULT_MODEL
 
     def describe(self) -> str:
         return f"Ollama at {self.base_url}"
+
+    # ----- Getting ready -----
+
+    def warm_up(self, progress: Callable[[str], None]) -> None:
+        """Start the local server if nothing answers (only when allowed and only locally)."""
+        if self.auto_start and is_local(self.base_url):
+            ollama_server.ensure_running(self.base_url, self.command, progress)
+
+    def prepare(self, progress: Callable[[str], None]) -> None:
+        """Start the server if needed, then download the default model if no model is installed."""
+        self.warm_up(progress)
+        if self.auto_pull and not self.list_models():
+            self.pull(self.default_model, progress)
+
+    def pull(self, model: str, progress: Callable[[str], None]) -> None:
+        """Download a model through the server, reporting progress like 'Downloading llama3.2... 43%'."""
+        progress(f"Downloading the AI model '{model}' (a few GB, only once)...")
+        response = self._open("POST", "/api/pull", {"name": model, "stream": True}, timeout=PULL_TIMEOUT_S)
+        try:
+            for raw_line in response:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "error" in chunk:
+                    raise ProviderError(f"Ollama couldn't download '{model}': {chunk['error']}")
+                total, completed = chunk.get("total"), chunk.get("completed")
+                if total and completed is not None:
+                    progress(f"Downloading the AI model '{model}'... {100 * completed // total}%")
+                elif chunk.get("status"):
+                    progress(f"Downloading the AI model '{model}'... {chunk['status']}")
+        except socket.timeout:
+            raise ProviderError(f"The download of '{model}' stalled. Check the internet connection and try again.") from None
+        finally:
+            response.close()
+        progress("")
 
     def list_models(self) -> list[str]:
         data = self._request_json("GET", "/api/tags", timeout=CONNECT_TIMEOUT_S)

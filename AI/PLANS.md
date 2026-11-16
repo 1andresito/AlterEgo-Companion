@@ -4,12 +4,15 @@ Keep this file current. Dates are absolute. "Now" is what is actually being work
 
 ## Done
 
+- 2026-11-16, Ollama looks after itself: choosing Ollama (or starting with it chosen) runs `ollama serve` if nothing answers locally and stops it on quit if Alter Ego started it (`providers/ollama_server.py`); the first reply with no model installed pulls `default_model` with progress in the chat. `Provider.warm_up()`/`prepare()` hooks run on the reply worker; `Assistant.warm_up()`/`test_connection()` use a worker too, so "Test connection" no longer blocks the GUI.
+
 - v0.1.0 to v0.5.0: CRT companion, expressions, chat, providers (Ollama, Claude via Claude Code, OpenAI-compatible), memory, push to talk, hands-free. See the README roadmap.
 - v0.6.0 (built 2026-11-16, not yet committed): spoken replies with local Kokoro, the "Alter Ego" blended voice (soft, youthful, inspired by Chihiro Fujisaki), pitch lift, expression-driven tempo, CRT tone, sentence-by-sentence streaming with the chat typewriter paced to the audio, hands-free muted while speaking, OpenAI-compatible speech API as an alternative, 26 new tests (146 total). Linux (Fedora, Wayland) verified and documented.
 
 ## Now
 
-- Listen to the v0.6.0 voice and tune the defaults: the blend weights (`PRESETS` in `voice/kokoro_local.py`), pitch (+2 semitones), the CRT effect strength, the expression tempos (`EXPRESSION_SPEED` in `voice/speaker.py`). The goal is a soft, gentle, slightly shy voice in the spirit of Chihiro, not an imitation of a specific actor.
+- **An accurate Chihiro voice, free and local** (decided 2026-11-16). The user wants Alter Ego to sound like Chihiro Fujisaki, not merely in that spirit, with no paid service and everything on the computer. Paid or online cloning (Fish Audio and similar) was tried as a design and rejected; the engine was removed. The approach being evaluated is a local zero-shot voice-cloning engine that takes a short reference clip the user supplies (the project ships no clip and no model of the actor): candidates are Chatterbox Nano/Turbo (MIT, PyTorch CPU) and NeuTTS Air/Nano (GGUF via llama.cpp, needs Python < 3.14). Both are being benchmarked on the user's 14-thread CPU for real-time factor; the winner becomes a `Synthesizer` next to Kokoro, with Kokoro staying the light default and the clone opt-in. Engines that already produce a specific voice set `shape_pitch = False` so the Kokoro pitch lift does not touch them.
+- RVC (Kokoro speech converted to a community-trained character model) was considered: strongest identity match, but the Python package does not install on Python 3.12+ and needs a separate interpreter; keep it as a fallback idea.
 - Commit v0.6.0 once the voice is accepted (`v0.6.0 spoken replies`).
 
 ## Next

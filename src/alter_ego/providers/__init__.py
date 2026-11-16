@@ -11,6 +11,7 @@ from ..settings.config import Config, data_dir
 from .base import ChatMessage, Provider, ProviderError
 from .claude_code import ClaudeCodeProvider
 from .ollama import OllamaProvider
+from .ollama_server import ollama_server
 from .openai_compat import OpenAICompatibleProvider
 
 OFFLINE_ID = "offline"
@@ -27,7 +28,13 @@ PROVIDER_LABELS: dict[str, str] = {
 def create_provider(provider_id: str, config: Config) -> Provider | None:
     """Build the provider named in the config. Returns None for offline mode."""
     if provider_id == OllamaProvider.id:
-        return OllamaProvider(base_url=str(config.get("ollama", "base_url", "http://localhost:11434")))
+        return OllamaProvider(
+            base_url=str(config.get("ollama", "base_url", "http://localhost:11434")),
+            command=str(config.get("ollama", "command", "ollama") or "ollama"),
+            auto_start=bool(config.get("ollama", "auto_start", True)),
+            auto_pull=bool(config.get("ollama", "auto_pull", True)),
+            default_model=str(config.get("ollama", "default_model", "") or ""),
+        )
     if provider_id == ClaudeCodeProvider.id:
         working_dir = data_dir() / "claude_code"
         return ClaudeCodeProvider(
@@ -57,4 +64,5 @@ __all__ = [
     "Provider",
     "ProviderError",
     "create_provider",
+    "ollama_server",
 ]

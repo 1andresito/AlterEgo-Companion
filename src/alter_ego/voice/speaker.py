@@ -108,7 +108,7 @@ class _SynthesisWorker(QThread):
     def _render(self, job: _Job) -> Speech:
         style = self.style
         tempo = clamp_speed(style.speed) * EXPRESSION_SPEED.get(job.expression, 1.0)
-        lift = pitch_factor(style.pitch_semitones)
+        lift = pitch_factor(style.pitch_semitones) if self._synthesizer.shape_pitch else 1.0
         # Produced slower by the pitch factor, then played faster by the same factor: higher, same tempo.
         speech = self._synthesizer.synthesize(job.text, speed=tempo / lift)
         speech = resample(speech, lift)

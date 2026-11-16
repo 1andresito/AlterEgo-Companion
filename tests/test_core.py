@@ -66,6 +66,17 @@ class FakeResponder:
     def test_connection(self):
         return "fake ok"
 
+    def reset(self):
+        pass
+
+    def warm_up(self, progress):
+        progress("fake warming up")
+
+    def prepare(self, progress):
+        progress("fake preparing")
+        if self.fail_with and self.fail_with.startswith("prepare:"):
+            raise ProviderError(self.fail_with[len("prepare:"):])
+
     def stream_reply(self, text, personality, history, cancelled):
         self.calls.append((text, tuple(history)))
         if self.fail_with:
@@ -364,6 +375,49 @@ class AssistantTests(unittest.TestCase):
         assistant = Assistant(Personality.default(), Conversation())
         self.assertFalse(assistant.send("   "))
         self.assertEqual(len(assistant.conversation), 0)
+
+    def test_prepare_runs_before_the_reply_and_reports_status(self):
+        responder = FakeResponder("[happy] Ready.")
+        assistant = Assistant(Personality.load(PERSONALITY_FILE), Conversation(), responder)
+        status = []
+        assistant.status.connect(status.append)
+        assistant.send("hi")
+        self.assertTrue(process_events_until(lambda: assistant.state is AssistantState.IDLE))
+        self.assertEqual(status[0], "fake preparing")
+        self.assertEqual(status[-1], "")
+        self.assertEqual(assistant.conversation.messages[-1].text, "Ready.")
+
+    def test_prepare_failure_is_a_nervous_message(self):
+        responder = FakeResponder("never", fail_with="prepare:Ollama isn't installed.")
+        assistant = Assistant(Personality.load(PERSONALITY_FILE), Conversation(), responder)
+        assistant.send("hi")
+        self.assertTrue(process_events_until(lambda: assistant.state is AssistantState.IDLE))
+        reply = assistant.conversation.messages[-1]
+        self.assertIn("Ollama isn't installed.", reply.text)
+        self.assertIs(reply.expression, Expression.SWEAT_TALK)
+        self.assertEqual(responder.calls, [])
+
+    def test_warm_up_and_test_connection_run_on_a_worker(self):
+        responder = FakeResponder("[happy] x")
+        assistant = Assistant(Personality.load(PERSONALITY_FILE), Conversation(), responder)
+        status = []
+        assistant.status.connect(status.append)
+        self.assertTrue(assistant.warm_up())
+        self.assertFalse(assistant.warm_up())  # already busy
+        self.assertTrue(process_events_until(lambda: status and status[-1] == ""))
+        self.assertIn("fake warming up", status)
+        self.assertEqual(len(assistant.conversation), 0)  # a silent warm-up says nothing
+
+        self.assertTrue(process_events_until(lambda: assistant.test_connection()))
+        self.assertTrue(process_events_until(lambda: len(assistant.conversation) == 1))
+        self.assertIn("fake ok", assistant.conversation.messages[0].text)
+        self.assertIn("fake preparing", status)
+
+        failing = FakeResponder("x", fail_with="prepare:no server")
+        assistant.set_responder(failing)
+        self.assertTrue(process_events_until(lambda: assistant.test_connection()))
+        self.assertTrue(process_events_until(lambda: len(assistant.conversation) == 2))
+        self.assertIn("no server", assistant.conversation.messages[1].text)
 
     def test_greet_only_once(self):
         assistant = Assistant(Personality.default(), Conversation())

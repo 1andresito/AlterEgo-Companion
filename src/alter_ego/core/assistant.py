@@ -141,6 +141,14 @@ class Responder(Protocol):
         """The conversation was cleared; forget any session state."""
         ...
 
+    def warm_up(self, progress: Callable[[str], None]) -> None:
+        """Get ready in the background (start a server). Worker thread; may raise ProviderError."""
+        ...
+
+    def prepare(self, progress: Callable[[str], None]) -> None:
+        """Do whatever a reply needs first (start a server, download a model). Worker thread; may raise ProviderError."""
+        ...
+
     def stream_reply(
         self,
         text: str,
@@ -218,6 +226,12 @@ class OfflineResponder:
     def reset(self) -> None:
         pass
 
+    def warm_up(self, progress) -> None:
+        pass
+
+    def prepare(self, progress) -> None:
+        pass
+
     def pick(self, text: str) -> tuple[Expression, str]:
         lowered = text.lower()
         for pattern, replies in self._rules:
@@ -244,6 +258,12 @@ class ProviderResponder:
     def reset(self) -> None:
         self.provider.reset()
 
+    def warm_up(self, progress) -> None:
+        self.provider.warm_up(progress)
+
+    def prepare(self, progress) -> None:
+        self.provider.prepare(progress)
+
     def resolve_model(self) -> str:
         """The configured model, or the first installed one if none is set."""
         configured = str(self._config.get(self.provider.id, "model", "") or "")
@@ -259,6 +279,7 @@ class ProviderResponder:
 
     def test_connection(self) -> str:
         # Each provider explains its own situation; we add which model will be used.
+        # Called on a worker thread after prepare(), so a server start or download is already done.
         summary = self.provider.test_connection()
         return f"{summary} I'll be thinking with '{self.resolve_model()}'."
 
@@ -306,6 +327,7 @@ class _ReplyWorker(QThread):
 
     piece = Signal(str)
     failed = Signal(str)
+    status = Signal(str)  # What the provider is doing before the reply (starting, downloading); "" clears it
 
     def __init__(self, responder: Responder, text: str, personality: Personality,
                  history: Sequence[Message], parent: QObject | None = None):
@@ -317,6 +339,8 @@ class _ReplyWorker(QThread):
 
     def run(self) -> None:
         try:
+            self._responder.prepare(self.status.emit)
+            self.status.emit("")
             for piece in self._responder.stream_reply(
                 self._text, self._personality, self._history, self.isInterruptionRequested
             ):
@@ -330,8 +354,38 @@ class _ReplyWorker(QThread):
             self.failed.emit(f"something went wrong inside me ({type(error).__name__}: {error})")
 
 
+class _PrepareWorker(QThread):
+    """Runs warm_up() (or prepare() + test_connection()) off the main thread."""
+
+    done = Signal(str)    # The summary, or "" for a silent warm-up
+    failed = Signal(str)
+    status = Signal(str)
+
+    def __init__(self, responder: Responder, test: bool, parent: QObject | None = None):
+        super().__init__(parent)
+        self._responder = responder
+        self._test = test
+
+    def run(self) -> None:
+        try:
+            if self._test:
+                self._responder.prepare(self.status.emit)
+                self.status.emit("")
+                self.done.emit(self._responder.test_connection())
+            else:
+                self._responder.warm_up(self.status.emit)
+                self.status.emit("")
+                self.done.emit("")
+        except ProviderError as error:
+            self.failed.emit(str(error))
+        except Exception as error:  # noqa: BLE001
+            traceback.print_exc()
+            self.failed.emit(f"something went wrong inside me ({type(error).__name__}: {error})")
+
+
 class Assistant(QObject):
     state_changed = Signal(object)  # AssistantState
+    status = Signal(str)            # Short progress text for the chat panel ("Starting Ollama..."); "" clears it
 
     def __init__(
         self,
@@ -346,6 +400,7 @@ class Assistant(QObject):
         self._responder: Responder = responder or OfflineResponder()
         self._state = AssistantState.IDLE
         self._worker: _ReplyWorker | None = None
+        self._prepare_worker: _PrepareWorker | None = None
         self._raw = ""                              # Everything received so far, tag included.
         self._reply: Message | None = None          # The message being streamed, once visible.
         self._failed = False
@@ -363,6 +418,41 @@ class Assistant(QObject):
     def set_responder(self, responder: Responder) -> None:
         self.cancel()
         self._responder = responder
+
+    def warm_up(self) -> bool:
+        """Let the responder get ready in the background (start a local server). Problems are said in the chat."""
+        return self._run_prepare(test=False)
+
+    def test_connection(self) -> bool:
+        """Prepare the responder, then have Alter Ego report the connection in the chat."""
+        return self._run_prepare(test=True)
+
+    def _run_prepare(self, test: bool) -> bool:
+        if self._prepare_worker is not None:
+            return False
+        worker = _PrepareWorker(self._responder, test, self)
+        worker.status.connect(self.status)
+        worker.done.connect(self._on_prepared)
+        worker.failed.connect(self._on_prepare_failed)
+        worker.finished.connect(self._on_prepare_finished)
+        self._prepare_worker = worker
+        worker.start()
+        return True
+
+    def _on_prepared(self, summary: str) -> None:
+        if summary:
+            self.conversation.add(Message(Role.ASSISTANT, summary, expression=Expression.PASSION_TALK))
+
+    def _on_prepare_failed(self, error: str) -> None:
+        print(f"Assistant: {error}")
+        self.conversation.add(Message(Role.ASSISTANT, f"Hmm... {error}", expression=Expression.SWEAT_TALK))
+
+    def _on_prepare_finished(self) -> None:
+        worker = self._prepare_worker
+        self._prepare_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self.status.emit("")
 
     def greet(self) -> None:
         """Say hello when the conversation is empty, or welcome the user back after a long pause.
@@ -401,6 +491,7 @@ class Assistant(QObject):
 
         worker = _ReplyWorker(self._responder, text, self.personality, self.conversation.messages, self)
         worker.piece.connect(self._on_piece)
+        worker.status.connect(self.status)
         worker.failed.connect(self._on_failed)
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker
@@ -413,6 +504,9 @@ class Assistant(QObject):
         if worker is not None and worker.isRunning():
             worker.requestInterruption()
             worker.wait(3000)
+        prepare = self._prepare_worker
+        if prepare is not None and prepare.isRunning():
+            prepare.wait(3000)
 
     # ----- Worker callbacks (run on the main thread) -----
 

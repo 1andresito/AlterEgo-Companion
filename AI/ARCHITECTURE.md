@@ -15,7 +15,7 @@ user input ──> Assistant.send(text) ──> Responder/Provider (worker threa
 
 `Conversation` (`core/conversation.py`) is the single source of truth. It holds `Message` objects and emits `message_added`, `message_updated`, `cleared`. Everything that reacts to a reply observes it; nothing writes to the UI directly.
 
-`Assistant` (`core/assistant.py`) turns a user message into a streamed reply: it adds the user message, runs the `Responder` on a worker thread, strips the leading expression tag (`[shy]`), cleans stage directions and emojis, and keeps updating one assistant `Message` until it is `complete`.
+`Assistant` (`core/assistant.py`) turns a user message into a streamed reply: it adds the user message, runs the `Responder` on a worker thread (first `prepare()`, which may start a server or download a model and reports through `Assistant.status`, then `stream_reply()`), strips the leading expression tag (`[shy]`), cleans stage directions and emojis, and keeps updating one assistant `Message` until it is `complete`. `Provider.warm_up()` is the lighter hook run when a provider is chosen; `providers/ollama_server.py` holds the one process handle for a server Alter Ego started.
 
 ## Inputs
 

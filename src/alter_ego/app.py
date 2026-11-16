@@ -16,7 +16,7 @@ from .core.memory import MEMORY_FILENAME, MemoryStore
 from .core.personality import Personality
 from .expressions import ExpressionManager
 from .memory_menu import add_memory_menu
-from .providers import create_provider
+from .providers import create_provider, ollama_server
 from .reactions import CharacterReactions
 from .settings.config import Config, data_dir
 from .speech import build_transcriber, build_wake_transcriber
@@ -236,6 +236,7 @@ def run() -> int:
 
     def apply_settings() -> None:
         assistant.set_responder(build_responder(config))
+        assistant.warm_up()  # Choosing Ollama starts its server at once, so the first reply is not delayed.
         if config.memory_enabled:
             memory.attach(conversation)
         else:
@@ -253,6 +254,7 @@ def run() -> int:
     # Stop any reply still streaming so the worker thread ends before the app does,
     # then save whatever was said and close the database.
     app.aboutToQuit.connect(assistant.cancel)
+    app.aboutToQuit.connect(ollama_server.stop)  # Only stops a server Alter Ego started itself.
     app.aboutToQuit.connect(push_to_talk.cancel)
     app.aboutToQuit.connect(hands_free.stop)
     app.aboutToQuit.connect(speaker.shutdown)
@@ -263,6 +265,7 @@ def run() -> int:
     chat = ChatWindow(assistant, push_to_talk, hands_free, speaker)
     reactions = CharacterReactions(expressions, assistant, chat, push_to_talk, hands_free)  # noqa: F841 (kept alive by reference)
     chat.typing_finished.connect(hands_free.reply_finished)
+    assistant.warm_up()  # With Ollama chosen, start its server now rather than at the first message.
     apply_speech_settings()
     player.set_volume(number_in("voice", "volume", 0.8))
     if push_to_talk.transcriber is not None:

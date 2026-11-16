@@ -12,7 +12,7 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 
 - Frameless, always-on-top window. Everything outside the CRT artwork is transparent.
 - Click Alter Ego to open a CRT-styled chat panel with message history and a text input.
-- Three AI providers, switchable from the menu: Ollama (local), Claude via Claude Code (your subscription, no key), OpenAI-compatible APIs (your key).
+- Three AI providers, switchable from the menu: Ollama (local), Claude via Claude Code (your subscription, no key), OpenAI-compatible APIs (your key). With Ollama, Alter Ego starts the server itself, downloads a first model if there is none, and stops the server again when it quits.
 - Replies stream in as they are generated; the window never freezes.
 - Push to talk: hold **F9** anywhere in Windows (or the **talk** button in the chat), speak, release. The words are recognised locally with Whisper and sent as a message. The key, microphone, engine and model are chosen from the **Voice** menu.
 - Hands-free (opt-in): say **"Hey Alter Ego"** and the character appears, listens for what you want, answers, and keeps listening a few seconds for a follow-up. The wake phrase is detected locally; no audio leaves the computer and none is stored.
@@ -109,16 +109,14 @@ Your conversation text goes to that service; you pay for usage with your own key
 
 ### Option C: Ollama (local, free)
 
-1. Install Ollama from <https://ollama.com> and make sure it is running (it sits in the tray).
-2. Download a model. A small one is fine for chatting:
+1. Install Ollama from <https://ollama.com/download>. That is the only step that needs you.
+2. Start Alter Ego and choose **AI** → **Provider** → **Ollama (local)** (it is the default). Alter Ego looks after the rest:
+   - If nothing is listening at the local address, it starts `ollama serve` itself and waits for it ("Starting Ollama..." shows in the chat). Choosing Ollama in the menu, or starting Alter Ego with Ollama chosen, does this at once, so the first reply is not delayed.
+   - The first time you talk to it with no model installed, it downloads `llama3.2` (about 2 GB, once) and shows the progress in the chat before answering.
+   - When you quit Alter Ego it stops the Ollama server again, but only if Alter Ego was the one who started it. An Ollama you started yourself (the desktop app, a terminal) is left alone.
+3. Optional: **AI** → **Model** to pick another installed model (the first one is used by default), and **AI** → **Test connection** to have Alter Ego confirm everything works. More models: `ollama pull <name>` in a terminal, or set `default_model` in the settings file before the first run.
 
-   ```powershell
-   ollama pull llama3.2
-   ```
-
-3. Start Alter Ego. Right-click the character → **AI** → **Model** to pick the model (the first installed one is used by default), and **AI** → **Test connection** to have Alter Ego confirm it can reach Ollama.
-
-If Ollama is on another machine or port, change `base_url` under `ollama` in the settings file.
+If Ollama is not installed, Alter Ego says so in the chat with the download link; it cannot install Ollama itself. If Ollama is on another machine or port, change `base_url` under `ollama` in the settings file: a remote server is never started or stopped by Alter Ego. `auto_start` and `auto_pull` switch the two behaviours off, and `command` can point at the Ollama executable if it is not on the PATH.
 
 ### The settings file
 
@@ -127,7 +125,8 @@ If Ollama is on another machine or port, change `base_url` under `ollama` in the
 ```json
 {
   "provider": "ollama",
-  "ollama":      { "base_url": "http://localhost:11434", "model": "" },
+  "ollama":      { "base_url": "http://localhost:11434", "model": "", "command": "ollama",
+                   "auto_start": true, "auto_pull": true, "default_model": "llama3.2" },
   "claude_code": { "command": "claude", "model": "", "effort": "" },
   "openai":      { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "" },
   "memory":      { "enabled": true, "context_messages": 30 },
@@ -185,7 +184,7 @@ If Ollama is on another machine or port, change `base_url` under `ollama` in the
 | Hide the chat | **×** in the header, or press **Esc** |
 | Move the chat | Drag it by its header. It follows Alter Ego until you move it yourself. |
 | Choose AI provider / model | Right-click Alter Ego → **AI**, or tray menu → **AI** |
-| Check the AI connection | **AI** → **Test connection** (Alter Ego answers in the chat) |
+| Check the AI connection | **AI** → **Test connection** (Alter Ego answers in the chat; with Ollama this also starts the server and fetches a first model if needed) |
 | Change size | Right-click Alter Ego → **Size** |
 | Hide / show | Left-click the tray icon, or use either menu (with a burst of static) |
 | Quit | Right-click menu or tray menu → **Quit** |
@@ -341,7 +340,8 @@ AlterEgo-Companion/
 │       │   └── assistant.py      # Assistant (worker thread, expression tags), responders
 │       ├── providers/        # AI backends (all standard library, no SDKs)
 │       │   ├── base.py           # Provider interface + ProviderError
-│       │   ├── ollama.py         # Ollama over HTTP
+│       │   ├── ollama.py         # Ollama over HTTP (chat, model list, model download with progress)
+│       │   ├── ollama_server.py  # Starts `ollama serve` when nothing answers locally, stops it on quit
 │       │   ├── claude_code.py    # Claude via the `claude -p` command (your login)
 │       │   └── openai_compat.py  # OpenAI-style /chat/completions (SSE streaming)
 │       ├── speech/           # Voice input
@@ -371,8 +371,9 @@ AlterEgo-Companion/
 │   ├── test_speech.py        # Audio conversion, key names, API engine, push-to-talk states
 │   ├── test_handsfree.py     # Utterance detector, wake-phrase matching, hands-free states
 │   ├── test_voice.py         # Sentence splitting, effects, both speech engines, Speaker states
-│   ├── test_providers.py     # Providers against fake servers and a fake `claude`
-│   └── fake_claude.py        # Stand-in for the Claude Code command
+│   ├── test_providers.py     # Providers against fake servers, a fake `claude` and a fake `ollama`
+│   ├── fake_claude.py        # Stand-in for the Claude Code command
+│   └── fake_ollama.py        # Stand-in for `ollama serve`
 ├── main.py                   # Entry point: python main.py
 ├── requirements.txt
 ├── LICENSE
@@ -382,7 +383,7 @@ AlterEgo-Companion/
 How the pieces talk to each other (all through Qt signals, so modules stay independent):
 
 1. The chat panel calls `Assistant.send(text)`.
-2. The `Assistant` adds the user's message to the `Conversation`, switches to `THINKING`, and starts a worker thread that asks its `Responder` for a reply. Network waits happen on that thread, so the desktop stays responsive.
+2. The `Assistant` adds the user's message to the `Conversation`, switches to `THINKING`, and starts a worker thread that first lets the `Responder` prepare (with Ollama: start the server, download a first model, progress shown in the chat) and then asks it for a reply. Network waits happen on that thread, so the desktop stays responsive. **Test connection** and the warm-up after choosing a provider run on the same kind of worker.
 3. `ProviderResponder` builds the prompt (personality system prompt + tag instruction + history) and streams text from the `Provider` (`OllamaProvider`). The offline responder plugs into the same slot.
 4. As pieces arrive, the `Assistant` strips the leading expression tag, adds the reply to the `Conversation` and keeps updating its text (`message_updated`).
 5. The chat panel types the growing text out; `CharacterReactions` sets the face as soon as the tag is known; when typing finishes it waits a few seconds and returns the face to Happy.
@@ -435,7 +436,7 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 - **Speakers:** with the default local engine, the voice is produced on your computer and nothing is sent anywhere. With the API engine, the text of every reply (not your messages) is sent to the service at `base_url`. The one-time voice download comes from the kokoro-onnx GitHub release and happens only when you choose it in the menu.
 - **Network:** depends on the provider you choose, and nothing is sent anywhere else.
   - *Offline:* no network at all.
-  - *Ollama:* your messages, the conversation history and the personality prompt go to the Ollama server in your settings (`http://localhost:11434` by default, your own computer).
+  - *Ollama:* your messages, the conversation history and the personality prompt go to the Ollama server in your settings (`http://localhost:11434` by default, your own computer). The one-time model download comes from ollama.com through the Ollama server; nothing of yours is sent with it.
   - *Claude via Claude Code:* the same text is sent to Anthropic by the Claude Code command under your own account, subject to Anthropic's privacy terms. Claude Code also stores the session transcript locally under its own folder (`~/.claude/`).
   - *OpenAI-compatible:* the same text is sent to the service at `base_url` with your API key, subject to that service's terms.
 - **Storage:** Alter Ego writes two files, both in `data/` (gitignored) and both only on your computer:

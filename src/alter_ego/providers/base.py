@@ -54,5 +54,20 @@ class Provider(ABC):
         models = self.list_models()
         return f"{self.describe()}: {len(models)} model(s) available."
 
+    def warm_up(self, progress: Callable[[str], None]) -> None:
+        """The provider was chosen or the app started: get ready in the background (start a server).
+
+        Runs on a worker thread. Reports what it is doing through `progress`
+        (short text for the chat panel). Raises ProviderError.
+        """
+
+    def prepare(self, progress: Callable[[str], None]) -> None:
+        """A reply is about to be requested: make the provider usable, whatever it takes.
+
+        Runs on the reply worker thread, right before stream_reply. May take a
+        long time (download a model). Reports through `progress`. Raises ProviderError.
+        """
+        self.warm_up(progress)
+
     def reset(self) -> None:
         """The conversation was cleared. Providers that keep their own session state drop it here."""

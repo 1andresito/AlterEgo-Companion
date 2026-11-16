@@ -155,6 +155,7 @@ class ChatWindow(QWidget):
         self._conversation.message_updated.connect(self._on_message_updated)
         self._conversation.cleared.connect(self._on_cleared)
         assistant.state_changed.connect(lambda _state: self._update_input_state())
+        assistant.status.connect(self._set_voice_status)  # "Starting Ollama...", "Downloading the AI model... 43%"
         if push_to_talk is not None:
             push_to_talk.state_changed.connect(self._on_listening_changed)
             push_to_talk.status.connect(self._set_voice_status)

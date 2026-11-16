@@ -16,7 +16,7 @@ A desktop companion built with Python and PySide6: the character Alter Ego from 
 
 ## Rules that are not negotiable
 
-- **Local first, private by default.** Nothing leaves the computer unless the user explicitly chose an API. No audio is ever written to disk. No large download happens without the user asking for it in the menu. Every network path is spelled out in the README's Privacy section.
+- **Local first, private by default.** Nothing leaves the computer unless the user explicitly chose an API. No audio is ever written to disk. No large download happens without the user asking for it in the menu, with one deliberate exception the owner chose: with Ollama as provider, the first reply downloads a default model if none is installed, with progress shown in the chat. Every network path is spelled out in the README's Privacy section.
 - **The app always runs.** Missing artwork, missing optional packages, no AI configured, no microphone, no speakers: Alter Ego starts anyway and explains, in character, what is missing and how to fix it. Heavy packages are imported lazily, inside the function that needs them.
 - **The GUI never freezes.** Anything that can take more than a few milliseconds (network, models, file downloads, audio conversion) runs on a worker `QThread` and reports back through signals.
 - **Modules talk through Qt signals, not direct calls.** The chat panel, the character's face, memory, voice input and voice output all observe the same `Conversation` and `Assistant`; none of them knows the others exist. `core/` and `providers/` contain no UI.

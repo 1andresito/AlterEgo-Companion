@@ -41,6 +41,9 @@ class Synthesizer(ABC):
     # Short id stored in the config file, and the label shown in menus.
     id: ClassVar[str] = ""
     label: ClassVar[str] = ""
+    # Whether the user's pitch setting applies. It exists to make a generic voice sound
+    # younger; an engine that already produces a specific person's voice leaves it alone.
+    shape_pitch: ClassVar[bool] = True
 
     @abstractmethod
     def describe(self) -> str:

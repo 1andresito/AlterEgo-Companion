@@ -14,8 +14,6 @@ from PySide6.QtGui import QActionGroup, QDesktopServices
 from PySide6.QtWidgets import QMenu
 
 from .core.assistant import Assistant, ProviderResponder
-from .core.conversation import Message, Role
-from .expressions import Expression
 from .providers import OFFLINE_ID, PROVIDER_LABELS, ProviderError
 from .settings.config import Config
 
@@ -74,15 +72,9 @@ def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_setti
 
     model_menu.aboutToShow.connect(fill_model_menu)
 
-    # --- Test connection: Alter Ego reports the result in the chat ---
+    # --- Test connection: runs on a worker thread; Alter Ego reports the result in the chat ---
     def test_connection() -> None:
-        try:
-            summary = assistant.responder.test_connection()
-            expression = Expression.PASSION_TALK
-        except ProviderError as error:
-            summary = f"Hmm... {error}"
-            expression = Expression.SWEAT_TALK
-        assistant.conversation.add(Message(Role.ASSISTANT, summary, expression=expression))
+        assistant.test_connection()
 
     # --- Settings file: URLs and API keys live there until a settings window exists ---
     def edit_settings_file() -> None:

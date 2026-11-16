@@ -30,6 +30,7 @@ TIMEOUT_S = 60
 class OpenAISynthesizer(Synthesizer):
     id = "openai"
     label = "OpenAI-compatible API (tts-1, uses your key)"
+    shape_pitch = False
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, api_key: str = "", model: str = DEFAULT_MODEL, voice: str = DEFAULT_VOICE):
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")

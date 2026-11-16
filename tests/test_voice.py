@@ -296,6 +296,7 @@ class FakeSynthesizer:
         self.ready = False
         self.needs_download = False
         self.download_size_mb = 0
+        self.shape_pitch = True
         self.prepared = 0
 
     def describe(self):

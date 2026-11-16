@@ -24,7 +24,11 @@ DEFAULTS: dict[str, Any] = {
     "provider": "ollama",
     "ollama": {
         "base_url": "http://localhost:11434",
-        "model": "",  # empty = use the first model Ollama reports
+        "model": "",               # empty = use the first model Ollama reports
+        "command": "ollama",       # or a full path to the Ollama executable
+        "auto_start": True,        # run `ollama serve` when nothing answers at a local base_url; stopped again on quit
+        "auto_pull": True,         # download default_model before the first reply if no model is installed
+        "default_model": "llama3.2",
     },
     "claude_code": {
         "command": "claude",  # or a full path to the Claude Code executable
@@ -63,7 +67,7 @@ DEFAULTS: dict[str, Any] = {
         "kokoro_model": "standard",     # "standard" (310 MB) or "small" (88 MB, a little faster and rougher)
         "openai_model": "tts-1",        # the API's speech model
         "openai_voice": "nova",         # the API's voice name
-        "pitch": 2,                     # semitones above the engine's natural pitch (negative = lower)
+        "pitch": 2,                     # semitones above the Kokoro voice's natural pitch (negative = lower); Kokoro only
         "speed": 1.0,                   # tempo: 0.8 slower ... 1.2 faster
         "volume": 0.8,                  # 0.0 .. 1.0
         "crt_effect": True,             # a light "speaking from inside a monitor" tone

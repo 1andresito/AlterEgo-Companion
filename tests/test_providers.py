@@ -7,6 +7,7 @@ the provider uses, so these tests run without Ollama installed.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import unittest
@@ -19,10 +20,12 @@ from alter_ego.providers import PROVIDER_LABELS, create_provider  # noqa: E402
 from alter_ego.providers.base import ChatMessage, ProviderError  # noqa: E402
 from alter_ego.providers.claude_code import ClaudeCodeProvider  # noqa: E402
 from alter_ego.providers.ollama import OllamaProvider  # noqa: E402
+from alter_ego.providers.ollama_server import NOT_INSTALLED_MESSAGE, OllamaServer, find_command, is_local  # noqa: E402
 from alter_ego.providers.openai_compat import OpenAICompatibleProvider  # noqa: E402
 from alter_ego.settings.config import Config  # noqa: E402
 
 FAKE_CLAUDE = [sys.executable, str(Path(__file__).resolve().parent / "fake_claude.py")]
+FAKE_OLLAMA = [sys.executable, str(Path(__file__).resolve().parent / "fake_ollama.py")]
 
 MODELS = ["llama3.2:latest", "qwen2.5:3b"]
 REPLY_PIECES = ["[shy]", " Hel", "lo ", "there."]
@@ -30,6 +33,8 @@ REPLY_PIECES = ["[shy]", " Hel", "lo ", "there."]
 
 class FakeOllamaHandler(BaseHTTPRequestHandler):
     received: list[dict] = []
+    models: list[str] = MODELS   # /api/tags answers with these; a pull adds to them
+    pulled: list[str] = []
 
     def log_message(self, *args):  # Silence request logging during tests.
         pass
@@ -44,7 +49,7 @@ class FakeOllamaHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/api/tags":
-            self._send_json(200, {"models": [{"name": name} for name in MODELS]})
+            self._send_json(200, {"models": [{"name": name} for name in FakeOllamaHandler.models]})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -53,10 +58,24 @@ class FakeOllamaHandler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(length) or b"{}")
         FakeOllamaHandler.received.append(request)
 
+        if self.path == "/api/pull":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.end_headers()
+            if request.get("name") == "broken":
+                self.wfile.write((json.dumps({"error": "pull model manifest: file does not exist"}) + "\n").encode())
+                return
+            for status in ({"status": "pulling manifest"}, {"status": "pulling abc", "total": 200, "completed": 50},
+                           {"status": "pulling abc", "total": 200, "completed": 200}, {"status": "success"}):
+                self.wfile.write((json.dumps(status) + "\n").encode())
+                self.wfile.flush()
+            FakeOllamaHandler.pulled.append(request["name"])
+            FakeOllamaHandler.models = FakeOllamaHandler.models + [request["name"] + ":latest"]
+            return
         if self.path != "/api/chat":
             self._send_json(404, {"error": "not found"})
             return
-        if request.get("model") not in MODELS:
+        if request.get("model") not in FakeOllamaHandler.models:
             self._send_json(404, {"error": f"model '{request.get('model')}' not found, try pulling it first"})
             return
 
@@ -89,7 +108,34 @@ class OllamaProviderTests(unittest.TestCase):
 
     def setUp(self):
         FakeOllamaHandler.received.clear()
+        FakeOllamaHandler.pulled.clear()
+        FakeOllamaHandler.models = MODELS
         self.provider = OllamaProvider(self.base_url + "/")  # trailing slash is tolerated
+
+    def test_prepare_pulls_the_default_model_only_when_nothing_is_installed(self):
+        progress = []
+        self.provider.prepare(progress.append)  # Two models installed: nothing to do, server already answers.
+        self.assertEqual(FakeOllamaHandler.pulled, [])
+        self.assertEqual(progress, [])
+
+        FakeOllamaHandler.models = []
+        provider = OllamaProvider(self.base_url, default_model="llama3.2")
+        provider.prepare(progress.append)
+        self.assertEqual(FakeOllamaHandler.pulled, ["llama3.2"])
+        self.assertTrue(any("llama3.2" in p and "25%" in p for p in progress), progress)
+        self.assertTrue(any("100%" in p for p in progress), progress)
+        self.assertEqual(progress[-1], "")
+        self.assertEqual(provider.list_models(), ["llama3.2:latest"])
+
+        FakeOllamaHandler.models = []
+        FakeOllamaHandler.pulled.clear()
+        OllamaProvider(self.base_url, auto_pull=False).prepare(progress.append)
+        self.assertEqual(FakeOllamaHandler.pulled, [])
+
+    def test_pull_failure_is_explained(self):
+        with self.assertRaises(ProviderError) as caught:
+            self.provider.pull("broken", lambda _: None)
+        self.assertIn("couldn't download 'broken'", str(caught.exception))
 
     def test_list_models(self):
         self.assertEqual(self.provider.list_models(), MODELS)
@@ -130,6 +176,79 @@ class OllamaProviderTests(unittest.TestCase):
         with self.assertRaises(ProviderError) as caught:
             provider.list_models()
         self.assertIn("Is it running?", str(caught.exception))
+
+
+class OllamaServerTests(unittest.TestCase):
+    """The supervisor starts a fake `ollama serve`, waits for it, and stops it again."""
+
+    @staticmethod
+    def free_port() -> int:
+        import socket
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            return sock.getsockname()[1]
+
+    def test_helpers(self):
+        self.assertTrue(is_local("http://localhost:11434"))
+        self.assertTrue(is_local("http://127.0.0.1:5000/"))
+        self.assertFalse(is_local("http://192.168.1.20:11434"))
+        self.assertEqual(find_command(FAKE_OLLAMA), FAKE_OLLAMA)
+        self.assertIsNone(find_command("definitely-not-an-installed-program-xyz"))
+        self.assertEqual(find_command(sys.executable), [sys.executable])
+
+    def test_starts_waits_and_stops(self):
+        port = self.free_port()
+        base_url = f"http://127.0.0.1:{port}"
+        server = OllamaServer()
+        progress = []
+        os.environ["FAKE_OLLAMA_DELAY"] = "0.7"
+        try:
+            self.assertTrue(server.ensure_running(base_url, FAKE_OLLAMA, progress.append))
+        finally:
+            os.environ.pop("FAKE_OLLAMA_DELAY", None)
+        self.assertTrue(server.started_by_us)
+        self.assertEqual(progress, ["Starting Ollama..."])
+        self.assertEqual(OllamaProvider(base_url).list_models(), [])
+        self.assertFalse(server.ensure_running(base_url, FAKE_OLLAMA))  # already answering: nothing started
+        server.stop()
+        self.assertFalse(server.started_by_us)
+        with self.assertRaises(ProviderError):
+            OllamaProvider(base_url).list_models()
+        server.stop()  # a second stop is harmless
+
+    def test_not_installed_remote_and_broken(self):
+        port = self.free_port()
+        server = OllamaServer()
+        with self.assertRaises(ProviderError) as caught:
+            server.ensure_running(f"http://127.0.0.1:{port}", "definitely-not-an-installed-program-xyz")
+        self.assertEqual(str(caught.exception), NOT_INSTALLED_MESSAGE)
+        with self.assertRaises(ProviderError) as caught:
+            server.ensure_running("http://192.0.2.1:9", FAKE_OLLAMA)  # TEST-NET address: never reachable
+        self.assertIn("isn't on this computer", str(caught.exception))
+        os.environ["FAKE_OLLAMA_EXIT"] = "1"
+        try:
+            with self.assertRaises(ProviderError) as caught:
+                server.ensure_running(f"http://127.0.0.1:{port}", FAKE_OLLAMA)
+        finally:
+            os.environ.pop("FAKE_OLLAMA_EXIT", None)
+        self.assertIn("stopped again at once", str(caught.exception))
+        self.assertFalse(server.started_by_us)
+
+    def test_provider_warm_up_uses_the_supervisor(self):
+        port = self.free_port()
+        base_url = f"http://127.0.0.1:{port}"
+        from alter_ego.providers import ollama_server as shared
+
+        provider = OllamaProvider(base_url, command=FAKE_OLLAMA)
+        try:
+            provider.warm_up(lambda _: None)
+            self.assertTrue(shared.started_by_us)
+            self.assertEqual(provider.list_models(), [])
+            OllamaProvider(base_url, command=FAKE_OLLAMA, auto_start=False).warm_up(lambda _: None)  # no-op
+        finally:
+            shared.stop()
+        self.assertFalse(shared.started_by_us)
 
 
 class FakeOpenAIHandler(BaseHTTPRequestHandler):

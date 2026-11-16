@@ -67,18 +67,18 @@ def add_speak_menu(
     )
 
     # --- Voice (Kokoro): English voices first, the rest in a submenu ---
-    voice_menu = menu.addMenu("Voice")
+    voice_menu = menu.addMenu("Kokoro voice")
     current_voice = str(config.get("voice", "kokoro_voice", "alter_ego") or "alter_ego")
     radio_menu(voice_menu, "kokoro_voice", [(name, VOICES[name]) for name in ENGLISH_VOICES], current_voice)
     radio_menu(voice_menu.addMenu("Other languages"), "kokoro_voice", [(name, VOICES[name]) for name in OTHER_VOICES], current_voice)
     radio_menu(
-        menu.addMenu("Voice model"), "kokoro_model",
+        menu.addMenu("Kokoro model"), "kokoro_model",
         [(key, f"{key.title()} ({size} MB)") for key, (_file, size) in MODELS.items()],
         str(config.get("voice", "kokoro_model", "standard") or "standard"),
     )
 
     # --- Delivery ---
-    radio_menu(menu.addMenu("Pitch"), "pitch", PITCHES, int(round(number("pitch", 2))))
+    radio_menu(menu.addMenu("Pitch (Kokoro voices)"), "pitch", PITCHES, int(round(number("pitch", 2))))
     radio_menu(menu.addMenu("Speed"), "speed", SPEEDS, round(number("speed", 1.0), 2))
     radio_menu(menu.addMenu("Volume"), "volume", VOLUMES, round(number("volume", 0.8), 2))
 
