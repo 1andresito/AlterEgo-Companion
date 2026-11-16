@@ -24,6 +24,8 @@ from .speech.controller import ListeningState, PushToTalk
 from .speech.handsfree import HandsFree
 from .speech.hotkey import PushToTalkKey
 from .speech.recorder import MicrophoneRecorder
+from .speak_menu import add_speak_menu
+from .voice import Speaker, SpeakingState, SpeechPlayer, build_style, build_synthesizer
 from .voice_menu import add_voice_menu
 
 # Gap between the character and the chat panel when they sit side by side.
@@ -168,13 +170,29 @@ def run() -> int:
         lambda text, matched: print(f"Hands-free heard: {text!r} -> {'wake phrase' if matched else 'no match'}")
     )
 
-    def on_push_to_talk_state(state: ListeningState) -> None:
-        if state is ListeningState.LISTENING:
+    # Spoken replies: a text-to-speech engine on a worker thread, played through the speakers.
+    player = SpeechPlayer(str(config.get("voice", "speaker", "") or ""))
+    speaker = Speaker(player, build_synthesizer(config))
+    speaker.set_style(build_style(config))
+    speaker.attach(conversation)
+
+    # The microphone must not hear Alter Ego's own voice, and hands-free must wait while
+    # the push-to-talk key is held: hands-free is paused while either is going on.
+    def update_hands_free_pause() -> None:
+        if push_to_talk.state is ListeningState.LISTENING or speaker.speaking:
             hands_free.pause()
-        elif state is ListeningState.IDLE:
+        else:
             hands_free.resume()
 
-    push_to_talk.state_changed.connect(on_push_to_talk_state)
+    push_to_talk.state_changed.connect(lambda _state: update_hands_free_pause())
+    speaker.state_changed.connect(lambda _state: update_hands_free_pause())
+
+    # Holding the key while Alter Ego is talking interrupts it: the user wants a word.
+    def interrupt_when_listening(state: ListeningState) -> None:
+        if state is ListeningState.LISTENING:
+            speaker.stop()
+
+    push_to_talk.state_changed.connect(interrupt_when_listening)
 
     def number(key: str, default: float) -> float:
         try:
@@ -203,6 +221,19 @@ def run() -> int:
         if config.hands_free_enabled:
             hands_free.start()
 
+    def apply_voice_settings() -> None:
+        player.set_device(str(config.get("voice", "speaker", "") or ""))
+        player.set_volume(number_in("voice", "volume", 0.8))
+        speaker.set_synthesizer(build_synthesizer(config))
+        speaker.set_style(build_style(config))
+        speaker.set_enabled(config.voice_enabled)
+
+    def number_in(section: str, key: str, default: float) -> float:
+        try:
+            return float(config.get(section, key, default))
+        except (TypeError, ValueError):
+            return default
+
     def apply_settings() -> None:
         assistant.set_responder(build_responder(config))
         if config.memory_enabled:
@@ -210,11 +241,13 @@ def run() -> int:
         else:
             memory.detach()
         apply_speech_settings()
+        apply_voice_settings()
         transcriber = push_to_talk.transcriber
         print(
             f"Alter Ego: now using {assistant.responder.describe()}; memory {'on' if memory.recording else 'off'}; "
             f"push to talk {transcriber.describe() if transcriber else 'off'}; "
-            f"hands-free {'on' if hands_free.active else 'off'}"
+            f"hands-free {'on' if hands_free.active else 'off'}; "
+            f"voice {speaker.synthesizer.describe() if speaker.enabled else 'off'}"
         )
 
     # Stop any reply still streaming so the worker thread ends before the app does,
@@ -222,18 +255,23 @@ def run() -> int:
     app.aboutToQuit.connect(assistant.cancel)
     app.aboutToQuit.connect(push_to_talk.cancel)
     app.aboutToQuit.connect(hands_free.stop)
+    app.aboutToQuit.connect(speaker.shutdown)
     app.aboutToQuit.connect(memory.close)
 
     expressions = ExpressionManager(assets / "animations")
     character = CharacterWindow(expressions)
-    chat = ChatWindow(assistant, push_to_talk, hands_free)
+    chat = ChatWindow(assistant, push_to_talk, hands_free, speaker)
     reactions = CharacterReactions(expressions, assistant, chat, push_to_talk, hands_free)  # noqa: F841 (kept alive by reference)
     chat.typing_finished.connect(hands_free.reply_finished)
     apply_speech_settings()
+    player.set_volume(number_in("voice", "volume", 0.8))
     if push_to_talk.transcriber is not None:
         print(f"Alter Ego: push to talk with {push_to_talk.transcriber.describe()}, hold {hotkey.name}")
     if hands_free.active:
         print(f'Alter Ego: hands-free on, say "{hands_free.phrase}"')
+    if speaker.enabled and speaker.synthesizer is not None:
+        where = " (voice files not downloaded yet: see Spoken replies in the menu)" if speaker.synthesizer.needs_download else ""
+        print(f"Alter Ego: spoken replies with {speaker.synthesizer.describe()}{where}")
 
     # Start near the upper-right corner instead of covering the center of the screen.
     screen = app.primaryScreen()
@@ -288,6 +326,7 @@ def run() -> int:
     def add_shared_menus(menu: QMenu) -> None:
         add_ai_menu(menu, assistant, config, apply_settings)
         add_voice_menu(menu, push_to_talk, assistant, config, apply_settings)
+        add_speak_menu(menu, speaker, config, apply_settings)
         add_memory_menu(menu, memory, assistant, config, apply_settings)
 
     character.extra_menu_builder = add_shared_menus

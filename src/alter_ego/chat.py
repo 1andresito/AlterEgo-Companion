@@ -3,6 +3,10 @@
 It shows the Conversation history, lets the user type a message, and reveals
 Alter Ego's replies with a typewriter effect. It never produces replies itself:
 it only calls Assistant.send() and listens to the Conversation.
+
+When replies are spoken (voice/speaker.py), the typewriter follows the voice:
+each sentence is typed out over the time its audio takes, and the reply counts
+as finished only when the last clip has been played.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from .core.conversation import Conversation, Message, Role
 from .expressions import Expression
 from .speech.controller import ListeningState, PushToTalk
 from .speech.handsfree import HandsFree
+from .voice.speaker import Speaker
 
 # How long a short voice hint ("I didn't catch that") stays in the input box.
 HINT_MS = 3000
@@ -36,9 +41,11 @@ CHAT_HEIGHT = 320
 HEADER_HEIGHT = 30
 CORNER_RADIUS = 10
 
-# Typewriter speed for Alter Ego's replies.
+# Typewriter speed for Alter Ego's replies (when no voice is pacing it).
 TYPE_INTERVAL_MS = 30
-TYPE_CHARS_PER_TICK = 2
+TYPE_CHARS_PER_TICK = 2.0
+# Typed text runs slightly ahead of the voice, so a sentence is on screen as it is heard.
+VOICE_LEAD = 0.9
 
 STYLE = """
 QTextBrowser {
@@ -104,9 +111,11 @@ class ChatWindow(QWidget):
         assistant: Assistant,
         push_to_talk: PushToTalk | None = None,
         hands_free: HandsFree | None = None,
+        speaker: Speaker | None = None,
     ):
         super().__init__()
         self._assistant = assistant
+        self._speaker = speaker
         self._conversation: Conversation = assistant.conversation
         self._name = assistant.personality.name
         self._push_to_talk = push_to_talk
@@ -133,6 +142,9 @@ class ChatWindow(QWidget):
         # Typewriter state: the message being revealed and how much is visible.
         self._typing_message: Message | None = None
         self._typed_chars = 0
+        self._typed_progress = 0.0       # Fractional characters, so the voice can set any speed.
+        self._type_rate = TYPE_CHARS_PER_TICK
+        self._pace_target: int | None = None  # With a voice: type up to here, then wait for the next sentence.
         self._type_timer = QTimer(self)
         self._type_timer.setInterval(TYPE_INTERVAL_MS)
         self._type_timer.timeout.connect(self._type_step)
@@ -156,6 +168,12 @@ class ChatWindow(QWidget):
             hands_free.status.connect(self._set_voice_status)
             hands_free.command.connect(self._on_transcribed)
             hands_free.failed.connect(lambda message: self._say(message, Expression.SWEAT_TALK))
+        if speaker is not None:
+            speaker.sentence_started.connect(self._on_sentence_started)
+            speaker.finished.connect(self._on_speech_finished)
+            speaker.status.connect(self._set_voice_status)
+            speaker.failed.connect(lambda message: self._say(message, Expression.SWEAT_TALK))
+            speaker.prepared.connect(lambda message: self._say(message, Expression.PASSION_TALK))
         self._render()
         self._update_input_state()
 
@@ -281,28 +299,36 @@ class ChatWindow(QWidget):
 
     def _on_message_added(self, message: Message) -> None:
         if message.role is Role.ASSISTANT:
-            self._typing_message = message
-            self._typed_chars = 0
-            self._type_timer.start()
-            self._update_input_state()
+            self._start_typing(message)
         self._render()
 
     def _on_message_updated(self, message: Message) -> None:
         if not self._conversation.contains(message):
             return  # A reply that was still streaming when the chat was cleared.
         if message.role is Role.ASSISTANT and self._typing_message is None and not message.complete:
-            self._typing_message = message
-            self._typed_chars = 0
-            self._type_timer.start()
-            self._update_input_state()
+            self._start_typing(message)
         self._render()
 
     def _on_cleared(self) -> None:
         # The chat can be cleared from the menus too, so the typewriter is stopped here, not in _clear().
         self._type_timer.stop()
         self._typing_message = None
+        self._pace_target = None
         self._render()
         self._update_input_state()
+
+    def _start_typing(self, message: Message) -> None:
+        self._typing_message = message
+        self._typed_chars = 0
+        self._typed_progress = 0.0
+        self._type_rate = TYPE_CHARS_PER_TICK
+        # With a voice, wait for the first sentence to start playing before showing anything.
+        self._pace_target = 0 if self._spoken(message) else None
+        self._type_timer.start()
+        self._update_input_state()
+
+    def _spoken(self, message: Message) -> bool:
+        return self._speaker is not None and self._speaker.current_message is message
 
     def _type_step(self) -> None:
         """Reveal a few more characters. Works for whole replies and for ones still streaming in."""
@@ -310,16 +336,45 @@ class ChatWindow(QWidget):
         if message is None:
             self._type_timer.stop()
             return
-        if self._typed_chars < len(message.text):
-            self._typed_chars = min(self._typed_chars + TYPE_CHARS_PER_TICK, len(message.text))
+        limit = len(message.text)
+        if self._pace_target is not None:
+            if not self._spoken(message):
+                self._pace_target = None  # The voice gave up (or was stopped): type on at the normal speed.
+                self._type_rate = TYPE_CHARS_PER_TICK
+            else:
+                limit = min(limit, self._pace_target)
+        if self._typed_chars < limit:
+            self._typed_progress = min(self._typed_progress + self._type_rate, limit)
+            self._typed_chars = int(self._typed_progress)
             self._render()
-        elif message.complete:
+        elif message.complete and self._typed_chars >= len(message.text) and not self._spoken(message):
             self._type_timer.stop()
             self._typing_message = None
+            self._pace_target = None
             self._render()
             self._update_input_state()
             self.typing_finished.emit()
-        # else: caught up with a reply that is still streaming; wait for more text.
+        # else: caught up with a reply that is still streaming, or waiting for the voice; wait for more.
+
+    # ----- Following the voice -----
+
+    def _on_sentence_started(self, message: object, end: int, seconds: float) -> None:
+        """A sentence of `message` is being spoken: type up to `end` over the next `seconds`."""
+        if message is None or message is not self._typing_message:
+            return
+        end = min(max(end, self._typed_chars), len(message.text))
+        self._pace_target = end
+        ticks = max(1.0, seconds * VOICE_LEAD * 1000 / TYPE_INTERVAL_MS)
+        self._type_rate = max(0.25, (end - self._typed_chars) / ticks)
+        if self._typed_progress < self._typed_chars:
+            self._typed_progress = float(self._typed_chars)
+
+    def _on_speech_finished(self, message: object) -> None:
+        """The voice has stopped (done, or interrupted): show whatever is left and finish normally."""
+        if message is None or message is not self._typing_message:
+            return
+        self._pace_target = None
+        self._type_rate = TYPE_CHARS_PER_TICK * 4 if not message.complete else max(TYPE_CHARS_PER_TICK, len(message.text) - self._typed_chars)
 
     def _render(self) -> None:
         """Rebuild the whole history as HTML.

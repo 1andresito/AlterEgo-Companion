@@ -56,6 +56,20 @@ DEFAULTS: dict[str, Any] = {
         "awake_seconds": 3,             # seconds of silence after the wake phrase before it stops listening
         "follow_up_seconds": 3,         # seconds of silence after a reply before it stops listening; 0 = none
     },
+    "voice": {
+        "enabled": True,                # speak replies out loud (the voice files are downloaded on request, not silently)
+        "synthesizer": "kokoro",        # "kokoro" = local and offline, "openai" = the API from the openai section
+        "kokoro_voice": "alter_ego",    # "alter_ego" (the soft blend) or a Kokoro voice id such as "af_heart"
+        "kokoro_model": "standard",     # "standard" (310 MB) or "small" (88 MB, a little faster and rougher)
+        "openai_model": "tts-1",        # the API's speech model
+        "openai_voice": "nova",         # the API's voice name
+        "pitch": 2,                     # semitones above the engine's natural pitch (negative = lower)
+        "speed": 1.0,                   # tempo: 0.8 slower ... 1.2 faster
+        "volume": 0.8,                  # 0.0 .. 1.0
+        "crt_effect": True,             # a light "speaking from inside a monitor" tone
+        "speaker": "",                  # "" = system default output, otherwise a device name from the menu
+        "models_dir": "",               # "" = data/voices; where the Kokoro files are kept
+    },
 }
 
 
@@ -127,6 +141,10 @@ class Config:
     @property
     def speech_enabled(self) -> bool:
         return bool(self.get("speech", "enabled", True))
+
+    @property
+    def voice_enabled(self) -> bool:
+        return bool(self.get("voice", "enabled", True))
 
     @property
     def hands_free_enabled(self) -> bool:

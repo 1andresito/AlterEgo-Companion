@@ -2,7 +2,7 @@
 
 An open-source desktop companion built with Python and PySide6, inspired by the digital character Alter Ego from Danganronpa.
 
-**Current version: v0.5.0 — voice input.** Alter Ego lives on your desktop inside a green CRT monitor, opens a chat panel when you click it, and talks to you through the AI of your choice: a local model via [Ollama](https://ollama.com), **Claude through your existing Claude Code login (no API key)**, or any OpenAI-compatible API (ChatGPT, Groq, LM Studio, ...). Replies stream in word by word, and the character's face follows the mood of what it says. Conversations are saved locally, so Alter Ego picks up where you left off after a restart (see [Memory](#memory)). And now you can talk: **hold F9 and speak**, or switch on hands-free mode and just say **"Hey Alter Ego"**, even while it is hidden in the tray. Speech is recognised on your own computer with Whisper (see [Push to talk](#push-to-talk) and [Hands-free](#hands-free)). Spoken replies are planned next (see [Roadmap](#roadmap)).
+**Current version: v0.6.0 — Alter Ego talks back.** Alter Ego lives on your desktop inside a green CRT monitor, opens a chat panel when you click it, and talks to you through the AI of your choice: a local model via [Ollama](https://ollama.com), **Claude through your existing Claude Code login (no API key)**, or any OpenAI-compatible API (ChatGPT, Groq, LM Studio, ...). Replies stream in word by word, and the character's face follows the mood of what it says. Conversations are saved locally, so Alter Ego picks up where you left off after a restart (see [Memory](#memory)). You can talk: **hold F9 and speak**, or switch on hands-free mode and just say **"Hey Alter Ego"**, even while it is hidden in the tray. Speech is recognised on your own computer with Whisper (see [Push to talk](#push-to-talk) and [Hands-free](#hands-free)). And now **Alter Ego answers out loud**, in a soft, youthful voice produced on your own computer with [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), sentence by sentence while the reply is still arriving, with the text typing along to the voice (see [Spoken replies](#spoken-replies)). Runs on Windows and Linux.
 
 > Without any provider, Alter Ego falls back to a small set of in-character "offline" lines, so the app always runs.
 
@@ -16,6 +16,7 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 - Replies stream in as they are generated; the window never freezes.
 - Push to talk: hold **F9** anywhere in Windows (or the **talk** button in the chat), speak, release. The words are recognised locally with Whisper and sent as a message. The key, microphone, engine and model are chosen from the **Voice** menu.
 - Hands-free (opt-in): say **"Hey Alter Ego"** and the character appears, listens for what you want, answers, and keeps listening a few seconds for a follow-up. The wake phrase is detected locally; no audio leaves the computer and none is stored.
+- Spoken replies: Alter Ego reads every reply aloud with a local, offline text-to-speech model (Kokoro). Speech starts after the first sentence, the chat text types along with the voice, the delivery follows the mood (shy replies are softer and slower, passionate ones quicker), and a light "inside a monitor" tone can be switched on or off. Pitch, speed, volume, voice and output device are chosen from the **Spoken replies** menu; an OpenAI-compatible speech API can be used instead.
 - Persistent memory: the conversation is saved in a local SQLite file and restored on the next start, with day dividers in the chat and a "welcome back" line after a long pause. Switch it off or wipe it from the **Memory** menu.
 - With Claude via Claude Code, the Claude session is resumed after a restart too, so Claude remembers as much as the chat panel shows.
 - The AI chooses an expression for each reply; the character's face follows (thinking → reply expression → back to idle).
@@ -35,10 +36,11 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 
 ## Requirements
 
-- Windows 10 or 11 (initial target)
-- Python 3.10+
-- A working desktop session
+- Windows 10 or 11, or Linux (tested on Fedora with Wayland). macOS is untested.
+- Python 3.10+ (3.14 works)
+- A working desktop session; on Linux, a system tray (for example Waybar's tray module) is useful but not required
 - For push to talk: a microphone. `requirements.txt` includes [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local speech recognition; the first use downloads the speech model (about 150 MB for `base`). Everything else works without it.
+- For spoken replies: speakers or headphones. `requirements.txt` includes [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) for local text-to-speech; the voice files (about 340 MB) are downloaded from the menu when you ask for them, never silently. Everything else works without it.
 
 ## Run from source
 
@@ -57,6 +59,18 @@ If PowerShell blocks activation, run this once in the current terminal, then act
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
+
+On Linux (Fedora, Ubuntu, ...), from a terminal in this folder:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+python main.py
+```
+
+Linux notes: audio goes through PipeWire/PulseAudio via Qt, nothing extra to install. The global push-to-talk key is Windows-only for now; on Linux hold the **talk** button in the chat panel, or use hands-free mode. If your compositor has no system tray, Alter Ego still runs: right-click the character for the menu.
 
 ## Choose an AI provider
 
@@ -132,11 +146,25 @@ If Ollama is on another machine or port, change `base_url` under `ollama` in the
     "wake_sensitivity": "normal",
     "awake_seconds": 3,
     "follow_up_seconds": 3
+  },
+  "voice": {
+    "enabled": true,
+    "synthesizer": "kokoro",
+    "kokoro_voice": "alter_ego",
+    "kokoro_model": "standard",
+    "openai_model": "tts-1",
+    "openai_voice": "nova",
+    "pitch": 2,
+    "speed": 1.0,
+    "volume": 0.8,
+    "crt_effect": true,
+    "speaker": "",
+    "models_dir": ""
   }
 }
 ```
 
-`provider` is one of `offline`, `ollama`, `claude_code`, `openai`. An empty `model` means "the first one available". The `memory` keys are explained under [Memory](#memory) and the `speech` keys under [Push to talk](#push-to-talk).
+`provider` is one of `offline`, `ollama`, `claude_code`, `openai`. An empty `model` means "the first one available". The `memory` keys are explained under [Memory](#memory), the `speech` keys under [Push to talk](#push-to-talk) and the `voice` keys under [Spoken replies](#spoken-replies).
 
 ## Controls
 
@@ -148,6 +176,9 @@ If Ollama is on another machine or port, change `base_url` under `ollama` in the
 | Talk instead of typing | Hold **F9** (works in any window), speak, release. Or hold the **talk** button in the chat panel. |
 | Change the talk key, microphone or speech engine | Right-click Alter Ego → **Voice** |
 | Talk without touching anything | **Voice** → **Hands-free**, then say "Hey Alter Ego" followed by your request |
+| Hear the replies | On by default. Right-click Alter Ego → **Spoken replies** → **Download my voice** the first time; **Test my voice** plays a line |
+| Interrupt Alter Ego mid-sentence | Hold the talk key or the **talk** button (it goes quiet and listens), or **clear** the chat |
+| Change the voice, pitch, speed, volume or speakers | Right-click Alter Ego → **Spoken replies** |
 | Clear the conversation | **clear** in the chat panel header (the old conversation stays in memory on disk, it is just no longer shown) |
 | Turn memory on or off | Right-click Alter Ego → **Memory** → **Remember conversations** |
 | Wipe all memory | **Memory** → **Forget everything...** (asks for confirmation) |
@@ -195,6 +226,32 @@ If it does not respond when you say the phrase, run Alter Ego from a terminal (`
 - **Something is printed but wrong** (for example `'hey, all to go'`): the small model misheard. Try `"wake_model": "base"` in the settings file (slower per check, better ears), set `"language"` to your language, or pick a wake phrase with longer, more distinct words.
 - **Printed as the phrase but nothing happens:** it did wake, and the 3-second silence window closed before you spoke. Say your request straight after the phrase, or raise `awake_seconds`.
 - If recognition fails (for example the package is missing), hands-free switches itself off and says why, instead of repeating the error for every sound.
+
+## Spoken replies
+
+Alter Ego reads its replies aloud. The voice is made on your own computer by [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), a small (82 million parameter), Apache-licensed text-to-speech model that sounds natural and runs comfortably on a CPU: on a recent laptop a sentence is ready in about half the time it takes to say it, so speech starts well before the reply has finished arriving.
+
+**First time:** right-click Alter Ego → **Spoken replies** → **Download my voice (338 MB)**. The files go into `data/voices/` (gitignored) and nothing is downloaded until you ask; before that, Alter Ego says once in the chat that its voice needs downloading. Install the package with `pip install -r requirements.txt` if you did not already.
+
+How it works:
+
+1. The `Speaker` watches the conversation like the chat panel does. As a reply streams in, every complete sentence is handed to a worker thread that runs the model; finished clips are played in order through the speakers (Qt Multimedia, so nothing extra to install). A reply that starts with "Oh! H-hello." is already being said while the rest is still being written.
+2. The chat's typewriter follows the voice: each sentence is typed out over the time its audio takes, and the reply counts as finished (face relaxes, hands-free follow-up window opens) only when the last clip has been played.
+3. The delivery follows the expression the AI chose for the reply: `[shy]` and `[sad]` replies are spoken a little slower, `[passionate]` and `[surprised]` ones a little quicker.
+4. While Alter Ego is talking the hands-free microphone is paused, so it never answers itself. Holding the push-to-talk key interrupts the speech.
+
+The **Spoken replies** menu:
+
+- **Speak replies out loud:** on/off (`enabled`).
+- **Engine:** local Kokoro (default, offline), or **OpenAI-compatible API**: `POST /audio/speech` at the `base_url` from the `openai` section with that key (`openai_model`, `openai_voice`; OpenAI's `tts-1` with `nova`, or a local server such as speaches, LocalAI or Kokoro-FastAPI). The text of each reply leaves the computer in that case.
+- **Voice:** *Alter Ego (soft blend)* is the default, a mix of three Kokoro voices (Heart, Bella and a little of the whispery Nicole) chosen for a soft, gentle, youthful sound in the spirit of the character the project is inspired by. Any single Kokoro voice can be picked instead, including British, Japanese, Spanish, French, Italian, Portuguese, Chinese and Hindi ones (`kokoro_voice`; the language follows the voice). The blend weights live in `PRESETS` in `src/alter_ego/voice/kokoro_local.py` if you want to tune your own.
+- **Voice model:** *Standard* (310 MB, full quality) or *Small* (88 MB, 8-bit, a little faster and slightly rougher) (`kokoro_model`).
+- **Pitch:** Kokoro has no pitch control, so Alter Ego produces each clip a little slower and plays it a little faster, which raises the voice without changing the tempo (and raises its resonances, which is what makes a voice sound younger). The default is 2 semitones up (`pitch`, from -6 to 8).
+- **Speed**, **Volume**, **Speakers:** tempo (`speed`, 0.6 to 1.6), loudness (`volume`, 0 to 1) and the output device (`speaker`, a device name or empty for the system default).
+- **Computer-voice effect:** a light "speaking from inside a monitor" tone: no deep lows, softened highs, a faint tiny-speaker ring and a touch of saturation, mixed in gently so the words stay clear (`crt_effect`). Switch it off for the plain voice.
+- **Prepare my voice** loads the model ahead of time (the first reply after a start otherwise waits about two seconds); **Test my voice** says a line.
+
+If the package is missing, the files are not downloaded, the speakers cannot be opened or the model fails, Alter Ego says so once in the chat and stays quiet until the settings change; the text replies keep working as before.
 
 ## Memory
 
@@ -259,6 +316,8 @@ For a packaged `.exe`, Task Manager and Explorer show the executable's own icon,
 
 ```text
 AlterEgo-Companion/
+├── AI/                       # For AI assistants and contributors: rules, code style, architecture, plans
+├── .claude/                  # Claude Code instructions (they point at AI/)
 ├── assets/
 │   ├── animations/           # Expression PNGs
 │   └── personality/          # alter_ego.json
@@ -270,8 +329,9 @@ AlterEgo-Companion/
 │       ├── ai_menu.py        # "AI" submenu: provider, model, test connection
 │       ├── memory_menu.py    # "Memory" submenu: on/off, what is stored, forget everything
 │       ├── voice_menu.py     # "Voice" submenu: push to talk on/off, key, microphone, engine
+│       ├── speak_menu.py     # "Spoken replies" submenu: on/off, engine, voice, pitch, speed, volume, speakers
 │       ├── character.py      # Desktop window: drawing, effects, dragging, menus
-│       ├── chat.py           # Chat panel: history, day dividers, input, talk button, typewriter
+│       ├── chat.py           # Chat panel: history, day dividers, input, talk button, typewriter (paced to the voice)
 │       ├── expressions.py    # Expression list + ExpressionManager
 │       ├── reactions.py      # Makes the face follow the conversation and the microphone
 │       ├── core/             # No UI in here
@@ -295,6 +355,14 @@ AlterEgo-Companion/
 │       │   ├── transcriber.py    # Transcriber interface + TranscriptionError
 │       │   ├── whisper_local.py  # faster-whisper, offline
 │       │   └── openai_stt.py     # /audio/transcriptions on an OpenAI-compatible API
+│       ├── voice/            # Voice output
+│       │   ├── synthesizer.py    # Synthesizer interface + SynthesisError, Speech clip
+│       │   ├── text.py           # Cuts a streaming reply into sentences
+│       │   ├── effects.py        # Pitch lift (resampling), the CRT tone, PCM conversion
+│       │   ├── kokoro_local.py   # kokoro-onnx, offline; voice presets; downloads the model files
+│       │   ├── openai_tts.py     # /audio/speech on an OpenAI-compatible API
+│       │   ├── player.py         # SpeechPlayer (Qt Multimedia audio sink)
+│       │   └── speaker.py        # Speaker: conversation -> sentences -> worker thread -> player, in order
 │       └── settings/
 │           └── config.py         # Loads/saves data/config.json
 ├── tests/
@@ -302,6 +370,7 @@ AlterEgo-Companion/
 │   ├── test_memory.py        # Memory store, context trimming, welcome-back, session file
 │   ├── test_speech.py        # Audio conversion, key names, API engine, push-to-talk states
 │   ├── test_handsfree.py     # Utterance detector, wake-phrase matching, hands-free states
+│   ├── test_voice.py         # Sentence splitting, effects, both speech engines, Speaker states
 │   ├── test_providers.py     # Providers against fake servers and a fake `claude`
 │   └── fake_claude.py        # Stand-in for the Claude Code command
 ├── main.py                   # Entry point: python main.py
@@ -320,8 +389,11 @@ How the pieces talk to each other (all through Qt signals, so modules stay indep
 6. The `MemoryStore` listens to the same `Conversation` signals: it inserts each new message, writes a streamed reply once when it is complete, and marks the conversation as ended when the chat is cleared. At start-up it loads the last conversation into the `Conversation` before the windows are connected.
 7. Voice comes in from the side: the global key (or the talk button) calls `PushToTalk.start()`/`stop()`. The controller records through the `MicrophoneRecorder`, runs the `Transcriber` on a worker thread and emits the text; the chat panel then calls `Assistant.send(text)`, exactly as if it had been typed. `CharacterReactions` listens to the same state signal for the listening face.
 8. `HandsFree` uses the recorder in streaming mode, feeds the `UtteranceDetector`, checks each utterance against the wake phrase with the small model, and emits `woke` (the app shows the character and chat) and then `command(text)`, which the chat panel sends the same way. The chat's `typing_finished` tells it when a reply is over, so it can open the follow-up window.
+9. The `Speaker` listens to the same `Conversation` signals as the chat panel. It cuts each reply into sentences as the text grows, queues them on a worker thread that runs the `Synthesizer`, shapes the clips (pitch, CRT tone) and plays them in order through the `SpeechPlayer`. It emits `sentence_started(message, end, seconds)`, which the chat uses to pace its typewriter, and `finished(message)` when the last clip has been played; only then does the chat emit `typing_finished`. The app pauses hands-free while the `Speaker` is speaking.
 
 Adding another backend means writing one `Provider` subclass in `providers/` and registering it in `providers/__init__.py`. Nothing else changes.
+
+If you work on the project with an AI coding assistant (or want the house rules yourself), start with [`AI/README.md`](AI/README.md): it holds the non-negotiable rules, the code style, an architecture map and the current plans. Tool folders such as `.claude/` only point there.
 
 ## Running the tests
 
@@ -329,7 +401,7 @@ Adding another backend means writing one `Provider` subclass in `providers/` and
 python -m unittest discover -s tests -v
 ```
 
-The tests cover the non-visual parts: personality and config loading, conversation history, expression-tag parsing and reply clean-up, the assistant's streaming send/reply cycle (including failures and cancellation), the memory store (saving, restoring, clearing, forgetting), context trimming, audio conversion, the utterance detector, wake-phrase matching, the push-to-talk and hands-free state machines with a fake microphone and engines, the API speech engine against a fake server, and all three providers against fakes (a fake Ollama server, a fake OpenAI server and a fake `claude` command). They need neither Ollama, Claude Code, an API key, a microphone nor the Whisper package, and they write only to temporary folders.
+The tests cover the non-visual parts: personality and config loading, conversation history, expression-tag parsing and reply clean-up, the assistant's streaming send/reply cycle (including failures and cancellation), the memory store (saving, restoring, clearing, forgetting), context trimming, audio conversion, the utterance detector, wake-phrase matching, the push-to-talk and hands-free state machines with a fake microphone and engines, the API speech engine against a fake server, sentence splitting, the voice effects, the API text-to-speech engine against a fake server, the Speaker state machine with a fake engine and a fake player, and all three providers against fakes (a fake Ollama server, a fake OpenAI server and a fake `claude` command). They need neither Ollama, Claude Code, an API key, a microphone, speakers, the Whisper package nor the Kokoro files, and they write only to temporary folders. On a machine without a display, run them with `QT_QPA_PLATFORM=offscreen`.
 
 ## Build a Windows executable
 
@@ -352,7 +424,7 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 - [x] v0.3.1: Claude via Claude Code login, OpenAI-compatible APIs
 - [x] v0.4.0: Persistent memory (conversations survive restarts, Memory menu)
 - [x] v0.5.0: Voice input: push to talk and hands-free "Hey Alter Ego", with local speech recognition (Whisper) or an API
-- [ ] v0.6.0: Text-to-speech, so Alter Ego answers out loud
+- [x] v0.6.0: Spoken replies: local text-to-speech (Kokoro) with a soft, youthful voice, sentence-by-sentence streaming, text paced to the voice, or an API
 - [ ] v0.7.0: Scheduled updates and notifications
 - [ ] Later: long-term recall of older conversations
 
@@ -360,6 +432,7 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 
 - **Microphone:** by default opened only while the push-to-talk key or the talk button is held, and closed the moment you let go. No audio files are written to disk. With the default local engine the recording never leaves your computer; with the API engine it is uploaded to the service at `base_url`. Switch voice input off entirely under **Voice** → **Push to talk**.
   - **Hands-free** (off by default) keeps the microphone open while the app runs. Audio is analysed in memory and discarded; only after the wake phrase is heard is the next thing you say treated as a message. The wake-phrase check is always local. See [Hands-free](#hands-free).
+- **Speakers:** with the default local engine, the voice is produced on your computer and nothing is sent anywhere. With the API engine, the text of every reply (not your messages) is sent to the service at `base_url`. The one-time voice download comes from the kokoro-onnx GitHub release and happens only when you choose it in the menu.
 - **Network:** depends on the provider you choose, and nothing is sent anywhere else.
   - *Offline:* no network at all.
   - *Ollama:* your messages, the conversation history and the personality prompt go to the Ollama server in your settings (`http://localhost:11434` by default, your own computer).
@@ -369,3 +442,4 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
   - `config.json`: your settings and, if you use one, your API key. Keep it private.
   - `memory.db`: your conversations, as plain SQLite. Switch saving off with **Memory** → **Remember conversations**, or delete everything with **Memory** → **Forget everything...**. With memory off, conversations are kept in RAM only and are gone when the app quits.
   - With Claude via Claude Code, `data/claude_code/session` holds the id of the Claude Code session being resumed; Claude Code itself keeps the transcript under `~/.claude/`.
+  - `voices/` holds the downloaded Kokoro model and voice files (no personal data). Delete the folder to free the space.
