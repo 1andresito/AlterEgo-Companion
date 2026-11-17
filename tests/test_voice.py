@@ -45,9 +45,12 @@ from alter_ego.voice.rvc_local import (  # noqa: E402
     DEFAULT_INDEX_RATE,
     DEFAULT_PITCH,
     HUBERT_FILES,
+    INSTALL_HINT,
     MODEL_HINT,
+    PACKAGED_HINT,
     find_character_model,
     find_index,
+    install_hint,
 )
 from alter_ego.voice.speaker import EXPRESSION_SPEED, NO_SYNTHESIZER_MESSAGE  # noqa: E402
 from alter_ego.voice.text import MIN_CHARS, speakable, take_sentences  # noqa: E402
@@ -319,6 +322,12 @@ class CharacterVoiceTests(unittest.TestCase):
                 del sys.modules["infer_rvc_python"]
             else:
                 sys.modules["infer_rvc_python"] = saved
+
+    def test_packaged_app_is_told_to_update_not_to_pip_install(self):
+        self.assertEqual(install_hint(frozen=False), INSTALL_HINT)
+        self.assertEqual(install_hint(frozen=True), PACKAGED_HINT)
+        self.assertNotIn("pip", PACKAGED_HINT)
+        self.assertIn("Update", PACKAGED_HINT)
 
     def test_tuning_is_fixed_in_the_code(self):
         engine, converter = self.make()

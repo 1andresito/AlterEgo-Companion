@@ -9,6 +9,7 @@ What is being worked on now and what comes next. Keep it current: when you start
   - A real install of Ollama through the setup, on a machine without Ollama. Its installer's silent flags (`/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-`) are standard for Inno Setup, but they have not been run against the real `OllamaSetup.exe` yet.
   - The Linux `pkexec` route, on a desktop with a polkit agent.
   - The self-update, once two releases exist: installed Windows (silent installer, then `/RELAUNCH=1` starts the new version), the portable zip, and Linux.
+- **v0.7.2 release.** The published v0.7.1 download has no working character voice ("the voice-conversion package is missing"). The spec fix is checked with a local CPU-PyTorch build and `--check-voice`. Still to do: push the `v0.7.2` tag; its release workflow must pass the voice smoke test on Windows and Linux.
 - **Kokoro int8 model.** `data/voices/kokoro-v1.0.int8.onnx` saves about 220 MB of RAM and is a little faster (RTF 0.20 against 0.23). Switch `build_synthesizer` to `model="small"` once the owner confirms it sounds the same through the RVC conversion.
 
 ## Next

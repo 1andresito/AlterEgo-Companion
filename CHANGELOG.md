@@ -5,6 +5,7 @@ What changed in each version, newest first. The release page on GitHub shows the
 ## v0.7.2: The character voice works in the downloads
 
 - **Fix:** the downloaded app couldn't speak in Alter Ego's voice ("the voice-conversion package is missing"). Two parts of the voice converter were left out of the build; they are in now, and every release build checks that the voice loads before it is published.
+- If part of the voice converter is ever missing in a download again, Alter Ego now says to update or reinstall, instead of giving `pip` instructions meant for running from source.
 - On Linux, the app started from the applications menu now writes `alter_ego.log` in its data folder, like on Windows, so problems can be looked into.
 
 ## v0.7.1: Updates and a TV switch-on

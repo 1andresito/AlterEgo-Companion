@@ -43,6 +43,20 @@ INSTALL_HINT = (
     "Install it with the two lines at the top of requirements-character-voice.txt "
     "(it needs Python 3.10 to 3.13; make the virtual environment with one of those)"
 )
+# The downloaded app has no pip: a missing piece there is a packaging bug the user can only update past.
+PACKAGED_HINT = (
+    "This copy of Alter Ego is missing part of its voice converter. Update or reinstall it from the "
+    "Releases page, and report it on GitHub if it keeps happening"
+)
+
+
+def install_hint(frozen: bool | None = None) -> str:
+    """What to do when the converter can't be imported: pip from source, update in the packaged app."""
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    return PACKAGED_HINT if frozen else INSTALL_HINT
+
+
 CHARACTER_DIR = "voice"  # Folder inside assets/ that holds the one voice model, shipped with the project.
 CHARACTER_MODEL = "alter_ego.pth"
 MODEL_HINT = (
@@ -315,7 +329,7 @@ class CharacterVoiceSynthesizer(Synthesizer):
             print(f"Alter Ego: the voice converter could not be imported: {type(error).__name__}: {error}")
             missing = f" ({error.name} is missing)" if getattr(error, "name", None) else ""
             raise SynthesisError(
-                f"I can't use a character voice yet: the voice-conversion package is missing{missing}. {INSTALL_HINT}"
+                f"I can't use a character voice yet: the voice-conversion package is missing{missing}. {install_hint()}"
             ) from None
         on_gpu = compute_device() == CUDA
         if not on_gpu:
