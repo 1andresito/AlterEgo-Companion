@@ -8,7 +8,7 @@ Inspired by the digital character Alter Ego from Danganronpa. Built with Python 
 
 > This is an unofficial, non-commercial fan project. It is not affiliated with or endorsed by Spike Chunsoft or the Danganronpa franchise.
 
-**Current version: v0.7.1** ([what's new](CHANGELOG.md))
+**Current version: v0.7.2** ([what's new](CHANGELOG.md))
 
 ---
 

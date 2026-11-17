@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import array
 import os
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -69,6 +70,29 @@ DEFAULT_F0_METHOD = "rmvpe+"
 DEFAULT_INDEX_RATE = 0.75
 DEFAULT_PITCH = 7
 TAG = "alter_ego"  # The converter's name for the one configured voice.
+
+
+def check_converter_import() -> int:
+    """Import the voice converter the way the app does; 0 if it works. For `AlterEgo --check-voice`.
+
+    The release workflow runs this on the built program, because a library that PyInstaller
+    missed only shows up when the converter is imported (v0.7.1 shipped without torchvision's
+    operators and the voice silently fell back to an error).
+    """
+    import traceback
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import torch  # noqa: F401
+            from infer_rvc_python import BaseLoader  # noqa: F401
+            from transformers import HubertModel  # noqa: F401
+    except Exception:  # noqa: BLE001 - any failure here is what the check is for
+        traceback.print_exc(file=sys.stdout)
+        print("The character voice converter can NOT be loaded.")
+        return 1
+    print("The character voice converter loads.")
+    return 0
 
 
 def find_index(model_path: Path) -> Path | None:
@@ -280,8 +304,13 @@ class CharacterVoiceSynthesizer(Synthesizer):
                 warnings.simplefilter("ignore")  # Its dependencies still import deprecated setuptools bits.
                 import torch
                 from infer_rvc_python import BaseLoader
-        except ImportError:
-            raise SynthesisError(f"I can't use a character voice yet: the voice-conversion package is missing. {INSTALL_HINT}") from None
+        except ImportError as error:
+            # The module that is really missing goes to the log: in a packaged build it means a packaging bug.
+            print(f"Alter Ego: the voice converter could not be imported: {type(error).__name__}: {error}")
+            missing = f" ({error.name} is missing)" if getattr(error, "name", None) else ""
+            raise SynthesisError(
+                f"I can't use a character voice yet: the voice-conversion package is missing{missing}. {INSTALL_HINT}"
+            ) from None
         on_gpu = compute_device() == CUDA
         if not on_gpu:
             torch.set_num_threads(self._threads or cpu_threads())

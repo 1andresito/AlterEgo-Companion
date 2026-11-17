@@ -2,6 +2,11 @@
 
 What changed in each version, newest first. The release page on GitHub shows the section for that version.
 
+## v0.7.2: The character voice works in the downloads
+
+- **Fix:** the downloaded app couldn't speak in Alter Ego's voice ("the voice-conversion package is missing"). Two parts of the voice converter were left out of the build; they are in now, and every release build checks that the voice loads before it is published.
+- On Linux, the app started from the applications menu now writes `alter_ego.log` in its data folder, like on Windows, so problems can be looked into.
+
 ## v0.7.1: Updates and a TV switch-on
 
 - **Updates.** When a new version is out, Alter Ego asks at start-up and, if you say yes, downloads it, installs it and starts again by itself. Your settings and memories stay. Turn the check off, or check by hand, from the **AI** menu.

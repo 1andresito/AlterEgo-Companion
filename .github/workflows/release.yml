@@ -90,6 +90,13 @@ jobs:
           echo "$REPLY"
           [[ "$REPLY" == *'"serverInfo"'* ]]
 
+      - name: Smoke test (the character voice converter loads in the build)
+        run: |
+          EXE=dist/AlterEgo/AlterEgo
+          [[ "$RUNNER_OS" == "Windows" ]] && EXE=dist/AlterEgo/AlterEgo.exe
+          timeout 300 "$EXE" --check-voice | tee check-voice.txt
+          grep -q "converter loads" check-voice.txt
+
       - name: Package (Windows)
         if: matrix.platform == 'windows'
         run: |

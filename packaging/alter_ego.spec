@@ -58,6 +58,35 @@ for package in PACKAGES + ([] if LITE else VOICE_PACKAGES):
     binaries += package_binaries
     hiddenimports += package_hidden
 
+pathex = [str(ROOT / "src")]
+if not LITE:
+    # pyworld (part of the character voice) imports pkg_resources, which puts setuptools' own
+    # vendored packages on sys.path only while running, so PyInstaller cannot see them. Without
+    # them the voice converter fails to import in the build ("the voice-conversion package is
+    # missing"). jaraco.text also reads its "Lorem ipsum.txt" when imported.
+    import setuptools
+
+    VENDOR = Path(setuptools.__file__).parent / "_vendor"
+    pathex.append(str(VENDOR))
+    hiddenimports += ["pkg_resources", "jaraco.text", "jaraco.functools", "jaraco.context", "more_itertools"]
+    datas.append((str(VENDOR / "jaraco" / "text" / "Lorem ipsum.txt"), "jaraco/text"))
+
+    # torchvision (imported by transformers, for the HuBERT model) keeps its operators in
+    # _C_stable.so and image_stable.so since 0.29, loaded with torch.ops.load_library rather than
+    # imported, so PyInstaller misses them ('Hidden import "torchvision._C" not found!'). Without
+    # them: "operator torchvision::nms does not exist", and the voice converter fails to import.
+    import importlib.util
+
+    tv_spec = importlib.util.find_spec("torchvision")
+    if tv_spec is not None and tv_spec.origin:
+        tv_dir = Path(tv_spec.origin).parent
+        binaries += [(str(lib), "torchvision") for lib in tv_dir.glob("*.so")]
+        binaries += [(str(lib), "torchvision") for lib in tv_dir.glob("*.pyd")]  # Windows
+        binaries += [(str(lib), "torchvision") for lib in tv_dir.glob("*.dll")]
+        for libs in (tv_dir.parent / "torchvision.libs",):
+            if libs.is_dir():
+                binaries += [(str(lib), "torchvision.libs") for lib in libs.iterdir()]
+
 excludes = [
     # Big parts of Qt that Alter Ego does not use.
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick", "PySide6.QtWebChannel",
@@ -71,7 +100,7 @@ if LITE:
 
 a = Analysis(  # noqa: F821
     [str(ROOT / "main.py")],
-    pathex=[str(ROOT / "src")],
+    pathex=pathex,
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

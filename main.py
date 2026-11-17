@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import sys
 
 # Make the src-layout package importable when running directly from a checkout.
@@ -14,7 +15,11 @@ def log_to_file_without_console() -> None:
     Started fresh each run, in the data folder next to the settings. The tool
     server is left alone: Claude Code talks to it over stdin/stdout.
     """
-    if sys.stdout is not None and sys.stderr is not None:
+    # Windows gives a windowed build no stdout at all; a Linux desktop launcher gives it /dev/null.
+    # Either way nobody would see the output. A terminal (or a pipe) keeps it.
+    if not getattr(sys, "frozen", False):
+        return
+    if sys.stdout is not None and sys.stderr is not None and _output_is_kept():
         return
     from alter_ego.settings.config import data_dir
 
@@ -24,10 +29,16 @@ def log_to_file_without_console() -> None:
         log = open(folder / LOG_FILENAME, "w", encoding="utf-8", buffering=1)
     except OSError:
         return
-    if sys.stdout is None:
-        sys.stdout = log
-    if sys.stderr is None:
-        sys.stderr = log
+    sys.stdout = log
+    sys.stderr = log
+
+
+def _output_is_kept() -> bool:
+    """False when stdout goes nowhere (missing or /dev/null)."""
+    try:
+        return sys.stdout.isatty() or os.path.realpath(f"/proc/self/fd/{sys.stdout.fileno()}") != os.devnull
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 if __name__ == "__main__":
@@ -36,6 +47,11 @@ if __name__ == "__main__":
         from alter_ego.providers.tools_mcp import main as serve_tools
 
         raise SystemExit(serve_tools())
+    if "--check-voice" in sys.argv:
+        # Used by the release workflow: can this build load the character voice converter?
+        from alter_ego.voice.rvc_local import check_converter_import
+
+        raise SystemExit(check_converter_import())
     log_to_file_without_console()
     from alter_ego.app import run
 

@@ -22,7 +22,7 @@ How a version goes from the code to the Releases page. Only the owner tags and p
    git push origin vX.Y.Z
    ```
 
-   The workflow builds on Windows and Linux, runs the tests, builds the program with PyInstaller, smoke-tests the file-tool server from the build, packages the files, and publishes the release with the changelog section. It refuses a tag that doesn't match `__version__`.
+   The workflow builds on Windows and Linux, runs the tests, builds the program with PyInstaller, smoke-tests the file-tool server and the character voice converter (`AlterEgo --check-voice`) from the build, packages the files, and publishes the release with the changelog section. It refuses a tag that doesn't match `__version__`.
 
 ## What CI builds
 
