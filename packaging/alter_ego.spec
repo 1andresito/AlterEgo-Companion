@@ -60,16 +60,19 @@ for package in PACKAGES + ([] if LITE else VOICE_PACKAGES):
 
 pathex = [str(ROOT / "src")]
 if not LITE:
-    # pyworld (part of the character voice) imports pkg_resources, which puts setuptools' own
-    # vendored packages on sys.path only while running, so PyInstaller cannot see them. Without
-    # them the voice converter fails to import in the build ("the voice-conversion package is
-    # missing"). jaraco.text also reads its "Lorem ipsum.txt" when imported.
+    # pyworld (part of the character voice) imports pkg_resources, which needs jaraco.text and
+    # more_itertools. They live in setuptools/_vendor, which pkg_resources adds to sys.path only
+    # while running, so PyInstaller cannot see them; without them the voice converter fails to
+    # import in the build. They are copied as plain source next to the program (_internal is on
+    # sys.path), the way that was tested on an installed copy. Do NOT put _vendor on pathex: it
+    # also holds old copies of typing_extensions, packaging and others that would shadow the real
+    # ones (torch then fails with "cannot import name 'Format' from 'typing_extensions'").
     import setuptools
 
     VENDOR = Path(setuptools.__file__).parent / "_vendor"
-    pathex.append(str(VENDOR))
-    hiddenimports += ["pkg_resources", "jaraco.text", "jaraco.functools", "jaraco.context", "more_itertools"]
-    datas.append((str(VENDOR / "jaraco" / "text" / "Lorem ipsum.txt"), "jaraco/text"))
+    hiddenimports.append("pkg_resources")
+    for name in ("jaraco", "more_itertools"):
+        datas.append((str(VENDOR / name), name))
 
     # torchvision (imported by transformers, for the HuBERT model) keeps its operators in
     # _C_stable.so and image_stable.so since 0.29, loaded with torch.ops.load_library rather than

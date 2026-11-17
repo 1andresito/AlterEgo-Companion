@@ -91,7 +91,13 @@ def check_converter_import() -> int:
         traceback.print_exc(file=sys.stdout)
         print("The character voice converter can NOT be loaded.")
         return 1
-    print("The character voice converter loads.")
+    from . import character_model  # The model the app would use (assets/voice/), not an LFS pointer.
+
+    if character_model() is None:
+        print("The character voice model (assets/voice/*.pth) is missing or a Git LFS pointer: "
+              "the app would fall back to the stand-in voice.")
+        return 1
+    print("The character voice converter loads, and the voice model is there.")
     return 0
 
 

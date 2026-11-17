@@ -95,7 +95,7 @@ jobs:
           EXE=dist/AlterEgo/AlterEgo
           [[ "$RUNNER_OS" == "Windows" ]] && EXE=dist/AlterEgo/AlterEgo.exe
           timeout 300 "$EXE" --check-voice | tee check-voice.txt
-          grep -q "converter loads" check-voice.txt
+          grep -q "voice model is there" check-voice.txt
 
       - name: Package (Windows)
         if: matrix.platform == 'windows'
