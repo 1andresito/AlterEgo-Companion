@@ -4,10 +4,11 @@ What is being worked on now and what comes next. Keep it current: when you start
 
 ## Now
 
-- **v0.7.0 release check.** The downloads, first-run setup and docs are built. Still to do by hand:
+- **v0.7.0 / v0.7.1 release check.** The downloads, first-run setup and docs are built. Still to do by hand:
   - The first GitHub Actions run (a dry run with **Run workflow**). Check the Linux build and the full Windows build with CPU PyTorch: size, start-up, and the character voice running on the CPU.
   - A real install of Ollama through the setup, on a machine without Ollama. Its installer's silent flags (`/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-`) are standard for Inno Setup, but they have not been run against the real `OllamaSetup.exe` yet.
   - The Linux `pkexec` route, on a desktop with a polkit agent.
+  - The self-update, once two releases exist: installed Windows (silent installer, then `/RELAUNCH=1` starts the new version), the portable zip, and Linux.
 - **Kokoro int8 model.** `data/voices/kokoro-v1.0.int8.onnx` saves about 220 MB of RAM and is a little faster (RTF 0.20 against 0.23). Switch `build_synthesizer` to `model="small"` once the owner confirms it sounds the same through the RVC conversion.
 
 ## Next
@@ -22,7 +23,6 @@ What is being worked on now and what comes next. Keep it current: when you start
 
 ## Ideas
 
-- An update check that tells the user, in character, when a new release is out (asking first, never downloading on its own).
 - Code-sign the Windows build, so the "unknown publisher" warning goes away.
 - An AppImage or Flatpak alongside the Linux tarball. macOS is untested.
 - A mouth-movement feel while speaking, if closed-mouth artwork is added.

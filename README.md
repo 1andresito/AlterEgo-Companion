@@ -8,7 +8,7 @@ Inspired by the digital character Alter Ego from Danganronpa. Built with Python 
 
 > This is an unofficial, non-commercial fan project. It is not affiliated with or endorsed by Spike Chunsoft or the Danganronpa franchise.
 
-**Current version: v0.7.0** ([what's new](CHANGELOG.md))
+**Current version: v0.7.1** ([what's new](CHANGELOG.md))
 
 ---
 
@@ -48,6 +48,10 @@ Alter Ego appears in the top-right corner of your screen and asks what it should
 Which model? **Llama 3.2** suits most computers. **Llama 3.2 1B** is lighter, for small laptops. **Qwen 2.5 7B** is smarter, and needs 8 GB of free memory.
 
 You can open the setup again any time from the right-click menu: **AI** → **Set up Ollama and my voice...**.
+
+### Updates
+
+When a new version is out, Alter Ego asks you at start-up: **Update now**, **Not now** or **Skip this version**. If you say yes, it downloads the new version, closes for a moment and starts again by itself. Your settings and memories stay. Check by hand from **AI** → **Check for updates now**, or switch the start-up check off with **AI** → **Check for updates at start-up**.
 
 > Would you rather use ChatGPT or Claude instead of a local AI? Skip the Ollama items and see [Choosing an AI](#choosing-an-ai).
 
@@ -120,6 +124,7 @@ Alter Ego is local-first. Here is everything that can leave your computer, and w
   - With Claude, Claude Code's own web tools are used.
 - **Your microphone.** It is open only while you hold the talk key, unless you turn on hands-free. With hands-free, the wake phrase is checked on your computer, and audio that isn't for Alter Ego is thrown away. No audio is ever saved to disk. Speech goes to an API only if you chose the API speech engine.
 - **Downloads.** Ollama, the AI model and the voice files are downloaded only when you choose them in the setup or the menu. Ollama comes from ollama.com, the model through Ollama, and the voice files from GitHub (Kokoro) and Hugging Face (two voice base models). Nothing of yours is sent with them. The Whisper speech model is downloaded from Hugging Face the first time you talk.
+- **Update check** (on by default, **AI** → **Check for updates at start-up**). At start-up Alter Ego asks GitHub for the latest version number. Nothing of yours is sent, and the new version is downloaded from GitHub only after you say yes.
 - **Files on your computer.** Alter Ego keeps its data in one folder: `%APPDATA%\AlterEgo` on Windows, `~/.config/alter_ego` on Linux, or `data/` when run from source.
   - `config.json`: your settings and, if you use one, your API key. Keep it private.
   - `memory.db`: your conversations. Switch saving off, or delete everything, from the **Memory** menu.
@@ -156,6 +161,7 @@ Uninstalling Alter Ego keeps this data folder, so your memories survive an updat
 - [x] v0.5.0: voice input (push to talk, "Hey Alter Ego")
 - [x] v0.6.0: spoken replies in the character's own voice
 - [x] v0.7.0: easy install: downloads on the Releases page and a first-run setup
+- [x] v0.7.1: updates from inside the app, and a CRT switch-on and switch-off
 - [ ] v0.8.0: reminders and notifications: Alter Ego speaks up on its own
 - [ ] Later: long-term recall of older conversations
 

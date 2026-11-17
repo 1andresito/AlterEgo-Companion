@@ -18,6 +18,7 @@ import urllib.request
 from typing import Callable, Iterator
 
 from .base import ChatMessage, Provider, ProviderError
+from .https import urlopen
 from .ollama_server import direct_url
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -91,7 +92,7 @@ class OpenAICompatibleProvider(Provider):
             headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(url, data=body, method=method, headers=headers)
         try:
-            return urllib.request.urlopen(request, timeout=timeout)
+            return urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             raise ProviderError(self._explain_http_error(error)) from None
         except urllib.error.URLError as error:

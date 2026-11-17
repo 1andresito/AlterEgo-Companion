@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from alter_ego.providers import PROVIDER_LABELS, create_provider  # noqa: E402
 from alter_ego.providers.base import ChatMessage, ProviderError  # noqa: E402
+from alter_ego.providers import https  # noqa: E402
 from alter_ego.providers.claude_code import ClaudeCodeProvider  # noqa: E402
 from alter_ego.providers.ollama import OllamaProvider  # noqa: E402
 from alter_ego.providers.ollama_server import NOT_INSTALLED_MESSAGE, OllamaServer, find_command, is_local  # noqa: E402
@@ -436,6 +437,27 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNone(create_provider("bogus", config))
         for provider_id in ("ollama", "claude_code", "openai"):
             self.assertIn(provider_id, PROVIDER_LABELS)
+
+
+class HttpsTests(unittest.TestCase):
+    """Downloads check certificates with the system store or certifi, not Python's own list."""
+
+    def test_every_download_uses_the_shared_certificate_check(self):
+        from unittest import mock
+
+        with mock.patch("urllib.request.urlopen") as opened:
+            https.urlopen("https://example.invalid/voices-v1.0.bin", timeout=5)
+        self.assertIs(opened.call_args.kwargs["context"], https.ssl_context())
+        self.assertEqual(opened.call_args.kwargs["timeout"], 5)
+
+    def test_falls_back_when_the_optional_packages_are_missing(self):
+        import ssl
+        from unittest import mock
+
+        with mock.patch.dict(sys.modules, {"truststore": None, "certifi": None}):
+            context = https._make_context()
+        self.assertIsInstance(context, ssl.SSLContext)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
 
 
 if __name__ == "__main__":

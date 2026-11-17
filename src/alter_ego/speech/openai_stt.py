@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+from ..providers.https import urlopen
 from .audio import AudioClip
 from .transcriber import Transcriber, TranscriptionError
 
@@ -74,7 +75,7 @@ class OpenAITranscriber(Transcriber):
 
     def _send(self, request: urllib.request.Request) -> bytes:
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+            with urlopen(request, timeout=TIMEOUT_S) as response:
                 return response.read()
         except urllib.error.HTTPError as error:
             raise TranscriptionError(self._explain_http_error(error)) from None

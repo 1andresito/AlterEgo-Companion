@@ -38,6 +38,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 
+from ..providers.https import urlopen
+
 # Wikipedia asks programs to name themselves honestly; no personal details go in here.
 USER_AGENT = "AlterEgo-Companion/0.6 (desktop companion app)"
 WEB_TIMEOUT_S = 10
@@ -183,31 +185,9 @@ def page_text(page: str) -> str:
     return re.sub(r"\n\s*\n+", "\n", text).strip()
 
 
-def _ssl_context():
-    """The operating system's certificate check when truststore is installed, else certifi, else Python's own.
-
-    Python's built-in check on Windows cannot fetch missing intermediate certificates,
-    so some ordinary sites fail with CERTIFICATE_VERIFY_FAILED; the system check does not.
-    """
-    import ssl
-
-    try:
-        import truststore
-
-        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    except ImportError:
-        pass
-    try:
-        import certifi
-
-        return ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        return ssl.create_default_context()
-
-
 def _fetch(url: str, data: bytes | None = None) -> str:
     request = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=WEB_TIMEOUT_S, context=_ssl_context()) as response:
+    with urlopen(request, timeout=WEB_TIMEOUT_S) as response:
         raw = response.read(MAX_PAGE_BYTES)
         charset = response.headers.get_content_charset() or "utf-8"
     return raw.decode(charset, errors="replace")

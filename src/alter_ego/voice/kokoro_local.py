@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from ..providers.https import urlopen
 from .device import cpu_threads
 from .synthesizer import Speech, Synthesizer, SynthesisError
 
@@ -177,7 +178,7 @@ class KokoroSynthesizer(Synthesizer):
             partial = target.with_suffix(target.suffix + ".part")
             try:
                 request = urllib.request.Request(DOWNLOAD_BASE + name, headers={"User-Agent": "AlterEgo-Companion"})
-                with urllib.request.urlopen(request, timeout=60) as response, open(partial, "wb") as out:
+                with urlopen(request, timeout=60) as response, open(partial, "wb") as out:
                     while True:
                         chunk = response.read(1 << 20)
                         if not chunk:

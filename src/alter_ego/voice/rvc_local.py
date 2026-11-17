@@ -33,6 +33,7 @@ import warnings
 from pathlib import Path
 from typing import Callable
 
+from ..providers.https import urlopen
 from .device import CUDA, compute_device, cpu_threads, describe_device, use_cpu
 from .kokoro_local import KokoroSynthesizer
 from .synthesizer import Speech, Synthesizer, SynthesisError
@@ -205,7 +206,7 @@ class CharacterVoiceSynthesizer(Synthesizer):
             partial = target.with_suffix(target.suffix + ".part")
             try:
                 request = urllib.request.Request(url, headers={"User-Agent": "AlterEgo-Companion"})
-                with urllib.request.urlopen(request, timeout=60) as response, open(partial, "wb") as out:
+                with urlopen(request, timeout=60) as response, open(partial, "wb") as out:
                     while True:
                         chunk = response.read(1 << 20)
                         if not chunk:

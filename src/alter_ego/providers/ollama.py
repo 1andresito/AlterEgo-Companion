@@ -27,6 +27,7 @@ from typing import Callable, Iterator
 
 from ..core.tools import ToolBox, progress_text
 from .base import ChatMessage, Provider, ProviderError
+from .https import urlopen
 from .ollama_server import DEFAULT_COMMAND, direct_url, is_local, ollama_server
 
 DEFAULT_BASE_URL = "http://localhost:11434"
@@ -230,7 +231,7 @@ class OllamaProvider(Provider):
             url, data=body, method=method, headers={"Content-Type": "application/json"}
         )
         try:
-            return urllib.request.urlopen(request, timeout=timeout)
+            return urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             raise ProviderError(self._explain_http_error(error)) from None
         except urllib.error.URLError as error:

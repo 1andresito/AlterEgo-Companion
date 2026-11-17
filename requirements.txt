@@ -5,3 +5,7 @@ faster-whisper>=1.0
 # Local, offline text-to-speech for spoken replies (v0.6.0). Optional in the same way.
 # The voice files themselves (about 340 MB) are downloaded from the Spoken replies menu.
 kokoro-onnx>=0.4
+# HTTPS downloads check certificates with the system's own store (truststore), or
+# the certifi bundle, so they work in the packaged app and on every Windows computer.
+truststore>=0.9
+certifi

@@ -56,6 +56,7 @@ AlterEgo-Companion/
 │   ├── speak_menu.py          # "Spoken replies" submenu: on/off, volume, speakers
 │   ├── memory_menu.py         # "Memory" submenu: on/off, forget everything
 │   ├── tool_approval.py       # Asks the user before the AI first changes a file (Yes/No dialog)
+│   ├── update_prompt.py       # "There's a new version of me": asks, shows the download, quits for the update
 │   ├── character.py           # Desktop window: drawing, effects, dragging, menus
 │   ├── chat.py                # Chat panel: history, day dividers, input, talk button, typewriter
 │   ├── expressions.py         # Expression list + ExpressionManager
@@ -66,9 +67,11 @@ AlterEgo-Companion/
 │   │   ├── memory.py          # MemoryStore: saves the Conversation to SQLite, restores it
 │   │   ├── tools.py           # ToolBox: web search, reading pages, files in one folder
 │   │   ├── first_run.py       # What is missing (SetupPlan) and getting it (SetupRunner, worker thread)
+│   │   ├── updates.py         # New release? Download it and hand over to the new version (UpdateJob)
 │   │   └── assistant.py       # Assistant (worker thread, expression tags), responders
 │   ├── providers/             # AI backends (standard library only)
 │   │   ├── base.py            # Provider interface + ProviderError
+│   │   ├── https.py           # urlopen() with the system certificate check, for every download
 │   │   ├── ollama.py          # Ollama over HTTP: chat with tool calls, model list, model download
 │   │   ├── ollama_server.py   # Starts `ollama serve` when needed, switches Ollama off on quit
 │   │   ├── ollama_install.py  # Installs Ollama (Windows: official installer, silent; Linux: pkexec)
@@ -132,7 +135,7 @@ AlterEgo-Companion/
 
 ## Outputs in more detail
 
-- **Face:** `CharacterReactions` maps assistant, listening and speaking states to an `Expression`. `CharacterWindow` draws it with crossfades and CRT effects.
+- **Face:** `CharacterReactions` maps assistant, listening and speaking states to an `Expression`. `CharacterWindow` draws it with crossfades and CRT effects: static when it is shown or hidden, and a TV switching on (`power_on()`) at start and off (`power_off(done)`) at quit. Every Quit goes through `quit_app()` in `app.py`, which switches the TV off and then quits.
 - **Voice:** there is one voice, and it is not a setting.
   - `build_synthesizer` returns Kokoro converted with the RVC model in `assets/voice/alter_ego.pth`. If that file is missing, or is only a Git LFS pointer, the Kokoro blend stands in.
   - `voice/device.py` picks CUDA when PyTorch sees an NVIDIA card, else the CPU at half the cores. `ALTER_EGO_DEVICE=cpu` overrides it.

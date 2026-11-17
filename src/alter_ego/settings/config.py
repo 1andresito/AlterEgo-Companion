@@ -25,6 +25,10 @@ DEFAULTS: dict[str, Any] = {
     "setup": {
         "done": False,  # the first-run setup (Ollama, a model, the voice) was finished or skipped
     },
+    "updates": {
+        "check": True,   # look for a new release at start-up and ask before installing it (AI -> Check for updates at start-up)
+        "skipped": "",   # a version the user chose to skip; offered again only from AI -> Check for updates now
+    },
     "ollama": {
         "base_url": "http://localhost:11434",
         "model": "",               # empty = use the first model Ollama reports

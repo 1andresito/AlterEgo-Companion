@@ -20,6 +20,7 @@ The file is created the first time a setting changes. Changes made from the menu
 {
   "provider": "ollama",
   "setup":       { "done": false },
+  "updates":     { "check": true, "skipped": "" },
   "ollama":      { "base_url": "http://localhost:11434", "model": "", "command": "ollama",
                    "auto_start": true, "auto_pull": false, "default_model": "llama3.2" },
   "claude_code": { "command": "claude", "model": "", "effort": "" },
@@ -57,6 +58,8 @@ The file is created the first time a setting changes. Changes made from the menu
 
 - `provider`: which AI answers. One of `offline`, `ollama`, `claude_code` or `openai`.
 - `setup.done`: `true` once the first-run setup was finished or skipped. Set it back to `false` to see the setup at the next start. Or open it any time from **AI** → **Set up Ollama and my voice...**.
+- `updates.check`: look for a new release at start-up and ask before installing it (**AI** → **Check for updates at start-up**). Nothing is downloaded without a yes. A copy run from source never updates itself: use `git pull`.
+- `updates.skipped`: the version you chose to skip. It isn't offered again at start-up, only from **AI** → **Check for updates now**. Set it to `""` to be asked again.
 
 ### Ollama
 

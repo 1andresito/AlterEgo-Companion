@@ -2,6 +2,12 @@
 
 What changed in each version, newest first. The release page on GitHub shows the section for that version.
 
+## v0.7.1: Updates and a TV switch-on
+
+- **Updates.** When a new version is out, Alter Ego asks at start-up and, if you say yes, downloads it, installs it and starts again by itself. Your settings and memories stay. Turn the check off, or check by hand, from the **AI** menu.
+- **Like an old TV.** Alter Ego switches on like a CRT when it starts (a dot, a line, then the picture) and switches off the same way when you quit.
+- **Fix:** downloads (the voice, Ollama, the voice model's helpers) no longer fail with `CERTIFICATE_VERIFY_FAILED` in the packaged app or on Windows: every download and API call now checks certificates with the computer's own certificate store.
+
 ## v0.7.0: Easy to install
 
 - **Download and run.** Alter Ego now comes ready-made on the [Releases page](https://github.com/1andresito/AlterEgo-Companion/releases): a Windows installer, a portable Windows zip and a Linux download. You don't need Python, Git or a terminal.

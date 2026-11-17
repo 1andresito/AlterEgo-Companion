@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable
 
 from .base import ProviderError
+from .https import urlopen
 from .ollama_server import DEFAULT_COMMAND, DOWNLOAD_URL, find_command
 
 # The official Windows installer. A constant so the tests can point it at a fake server.
@@ -86,7 +87,7 @@ def download(url: str, target: Path, progress: Progress, label: str) -> None:
     partial = target.with_suffix(target.suffix + ".part")
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "AlterEgo-Companion"})
-        with urllib.request.urlopen(request, timeout=60) as response, open(partial, "wb") as out:
+        with urlopen(request, timeout=60) as response, open(partial, "wb") as out:
             total = int(response.headers.get("Content-Length") or 0)
             done = 0
             last = -1

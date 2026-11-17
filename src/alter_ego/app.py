@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
@@ -32,11 +32,14 @@ from .speech.hotkey import PushToTalkKey
 from .speech.recorder import MicrophoneRecorder
 from .speak_menu import add_speak_menu
 from .tool_approval import ToolApproval
+from .update_prompt import UpdatePrompt
 from .voice import Speaker, SpeakingState, SpeechPlayer, build_synthesizer, synthesizer_signature
 from .voice_menu import add_voice_menu
 
 # Gap between the character and the chat panel when they sit side by side.
 CHAT_GAP = 12
+# The start-up update check waits a little, so it doesn't compete with loading the voice and the AI.
+UPDATE_CHECK_DELAY_MS = 8000
 
 
 class EngineCache:
@@ -395,9 +398,25 @@ def run() -> int:
     if screen is not None:
         available = screen.availableGeometry()
         character.move(available.right() - character.width() - 32, available.top() + 48)
-    character.appear()
+    character.power_on()  # Like an old TV switching on.
     if first_run:
         open_setup()
+
+    # Quitting switches the TV off first (the chat goes at once), then the app ends.
+    def quit_app() -> None:
+        chat.hide()
+        character.power_off(app.quit)
+
+    character.quit_requested.connect(quit_app)
+
+    # Updates: at start-up Alter Ego asks GitHub for the latest release and, if it is newer, asks
+    # the user before installing it. Skipped right after a fresh install (the first run).
+    update_prompt = UpdatePrompt(config, quit_app, lambda: chat_holder["chat"])
+    app.aboutToQuit.connect(update_prompt.wait)
+    if update_prompt.method is None:
+        print("Alter Ego: running from source, so updates come from git (git pull).")
+    elif not first_run and bool(config.get("updates", "check", True)):
+        QTimer.singleShot(UPDATE_CHECK_DELAY_MS, update_prompt.check)
 
     # The chat follows the character until the user drags the chat somewhere else.
     docked = {"value": True}
@@ -451,7 +470,7 @@ def run() -> int:
 
     # The character's right-click menu is rebuilt each time, so it asks for the shared submenus here.
     def add_shared_menus(menu: QMenu) -> None:
-        add_ai_menu(menu, assistant, config, apply_settings, open_setup)
+        add_ai_menu(menu, assistant, config, apply_settings, open_setup, lambda: update_prompt.check(manual=True))
         add_voice_menu(menu, push_to_talk, assistant, config, apply_settings)
         add_speak_menu(menu, speaker, config, apply_settings)
         add_memory_menu(menu, memory, assistant, config, apply_settings)
@@ -470,7 +489,7 @@ def run() -> int:
     menu.addAction("Chat...", open_chat)
     add_shared_menus(menu)
     menu.addSeparator()
-    menu.addAction("Quit", app.quit)
+    menu.addAction("Quit", quit_app)
     tray.setContextMenu(menu)
 
     # Left-clicking the tray icon toggles the character window.

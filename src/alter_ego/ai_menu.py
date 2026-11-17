@@ -19,7 +19,8 @@ from .settings.config import Config
 
 
 def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_settings: Callable[[], None],
-                open_setup: Callable[[], None] | None = None) -> QMenu:
+                open_setup: Callable[[], None] | None = None,
+                check_updates: Callable[[], None] | None = None) -> QMenu:
     menu = parent.addMenu("AI")
 
     # --- Provider ---
@@ -113,4 +114,18 @@ def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_setti
         menu.addAction("Set up Ollama and my voice...", open_setup)
     menu.addAction("Test connection", test_connection)
     menu.addAction("Edit settings file...", edit_settings_file)
+
+    # --- Updates (update_prompt.py): asked at start-up, never installed without a yes ---
+    if check_updates is not None:
+        menu.addSeparator()
+        auto = menu.addAction("Check for updates at start-up")
+        auto.setCheckable(True)
+        auto.setChecked(bool(config.get("updates", "check", True)))
+
+        def toggle_auto(checked: bool) -> None:
+            config.set("updates", "check", bool(checked))
+            config.save()
+
+        auto.toggled.connect(toggle_auto)
+        menu.addAction("Check for updates now", check_updates)
     return menu
