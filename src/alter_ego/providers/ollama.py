@@ -12,8 +12,8 @@ model is offered the tools in core/tools.py through Ollama's tool calling.
 
 Alter Ego also looks after the server (see ollama_server.py): when Ollama is
 chosen it starts `ollama serve` if nothing answers locally, and before the
-first reply it downloads a default model if none is installed, so a fresh
-Ollama install works without a terminal.
+first reply it can download a default model if none is installed (`auto_pull`,
+off by default: the first-run setup asks the user which model to download).
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ class OllamaProvider(Provider):
         base_url: str = DEFAULT_BASE_URL,
         command: str | list[str] = DEFAULT_COMMAND,
         auto_start: bool = True,
-        auto_pull: bool = True,
+        auto_pull: bool = False,
         default_model: str = DEFAULT_MODEL,
         tools: ToolBox | None = None,
     ):

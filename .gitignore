@@ -11,6 +11,7 @@ venv/
 build/
 dist/
 *.spec
+!packaging/alter_ego.spec
 
 # User data (never commit personal conversations/settings)
 data/

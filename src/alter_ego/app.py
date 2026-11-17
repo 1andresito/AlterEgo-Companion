@@ -14,6 +14,7 @@ from .character import CharacterWindow
 from .chat import ChatWindow
 from .core.assistant import Assistant, OfflineResponder, ProviderResponder, Responder
 from .core.conversation import Conversation
+from .core.first_run import SetupRunner, make_plan
 from .core.memory import MEMORY_FILENAME, MemoryStore
 from .core.personality import Personality
 from .expressions import Expression, ExpressionManager
@@ -22,6 +23,7 @@ from .providers import create_provider, ollama_server
 from .providers.ollama import OllamaProvider
 from .providers.tools_mcp import ApprovalServer
 from .reactions import CharacterReactions
+from .setup_wizard import SetupWizard
 from .settings.config import Config, assets_dir, data_dir
 from .speech import build_transcriber, build_wake_transcriber, transcriber_signature, wake_signature
 from .speech.controller import ListeningState, PushToTalk
@@ -339,7 +341,42 @@ def run() -> int:
     chat_holder["chat"] = chat
     reactions = CharacterReactions(expressions, assistant, chat, push_to_talk, hands_free)  # noqa: F841 (kept alive by reference)
     chat.typing_finished.connect(hands_free.reply_finished)
-    assistant.warm_up()  # With Ollama chosen, start its server now rather than at the first message.
+
+    # First run: if Ollama, a model or the voice is missing, the setup window asks for them. Until it
+    # closes, nothing is started that would only fail (Ollama) or is still being downloaded (the voice).
+    setup_holder: dict[str, object] = {"wizard": None, "runner": None}
+    first_run = not config.setup_done
+    if first_run and not make_plan(config, speaker.synthesizer).anything_missing:
+        config.set("setup", "done", True)
+        config.save()
+        first_run = False
+
+    def finish_setup() -> None:
+        setup_holder["wizard"] = None
+        config.set("setup", "done", True)
+        config.save()
+        apply_settings()
+        speaker.preload()  # The voice may have just been downloaded: load it and get "Yes?" ready.
+
+    def open_setup() -> None:
+        wizard = setup_holder["wizard"]
+        if isinstance(wizard, SetupWizard):
+            show_window(wizard)
+            return
+        runner = setup_holder["runner"]
+        if not isinstance(runner, SetupRunner):
+            runner = SetupRunner(config, speaker.synthesizer)
+            setup_holder["runner"] = runner
+            app.aboutToQuit.connect(runner.wait)
+        runner.set_synthesizer(speaker.synthesizer)
+        wizard = SetupWizard(make_plan(config, speaker.synthesizer), runner)
+        wizard.setWindowIcon(app_icon)
+        wizard.completed.connect(finish_setup)
+        setup_holder["wizard"] = wizard
+        show_window(wizard)
+
+    if not first_run:
+        assistant.warm_up()  # With Ollama chosen, start its server now rather than at the first message.
     apply_speech_settings()
     player.set_volume(number_in("voice", "volume", 0.8))
     # Load the voice now, in the background, instead of during the first reply (seconds on a GPU,
@@ -359,6 +396,8 @@ def run() -> int:
         available = screen.availableGeometry()
         character.move(available.right() - character.width() - 32, available.top() + 48)
     character.appear()
+    if first_run:
+        open_setup()
 
     # The chat follows the character until the user drags the chat somewhere else.
     docked = {"value": True}
@@ -412,7 +451,7 @@ def run() -> int:
 
     # The character's right-click menu is rebuilt each time, so it asks for the shared submenus here.
     def add_shared_menus(menu: QMenu) -> None:
-        add_ai_menu(menu, assistant, config, apply_settings)
+        add_ai_menu(menu, assistant, config, apply_settings, open_setup)
         add_voice_menu(menu, push_to_talk, assistant, config, apply_settings)
         add_speak_menu(menu, speaker, config, apply_settings)
         add_memory_menu(menu, memory, assistant, config, apply_settings)

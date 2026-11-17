@@ -22,12 +22,15 @@ CONFIG_FILENAME = "config.json"
 
 DEFAULTS: dict[str, Any] = {
     "provider": "ollama",
+    "setup": {
+        "done": False,  # the first-run setup (Ollama, a model, the voice) was finished or skipped
+    },
     "ollama": {
         "base_url": "http://localhost:11434",
         "model": "",               # empty = use the first model Ollama reports
         "command": "ollama",       # or a full path to the Ollama executable
         "auto_start": True,        # run `ollama serve` when nothing answers at a local base_url; stopped again on quit
-        "auto_pull": True,         # download default_model before the first reply if no model is installed
+        "auto_pull": False,        # download default_model before the first reply if no model is installed (the setup asks instead)
         "default_model": "llama3.2",
     },
     "claude_code": {
@@ -147,6 +150,10 @@ class Config:
     @provider.setter
     def provider(self, provider_id: str) -> None:
         self._data["provider"] = provider_id
+
+    @property
+    def setup_done(self) -> bool:
+        return bool(self.get("setup", "done", False))
 
     @property
     def memory_enabled(self) -> bool:

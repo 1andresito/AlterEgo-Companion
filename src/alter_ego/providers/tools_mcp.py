@@ -146,8 +146,10 @@ def main() -> int:
     folder = os.environ.get(FOLDER_ENV) or None
     tools = ToolBox(folder=folder, internet=False, files=True,
                     approve=(lambda path: ask_app(address, path)) if address else (lambda path: False))
-    stdin = open(sys.stdin.fileno(), "r", encoding="utf-8", closefd=False)
-    stdout = open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False, newline="\n")
+    # File descriptors 0 and 1, not sys.stdin/sys.stdout: in the packaged (windowed) build Python sets
+    # those to None because there is no console, yet the pipes Claude Code passed are there.
+    stdin = open(0, "r", encoding="utf-8", closefd=False)
+    stdout = open(1, "w", encoding="utf-8", closefd=False, newline="\n")
     for line in stdin:
         line = line.strip()
         if not line:

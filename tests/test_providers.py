@@ -121,7 +121,7 @@ class OllamaProviderTests(unittest.TestCase):
         self.assertEqual(progress, [])
 
         FakeOllamaHandler.models = []
-        provider = OllamaProvider(self.base_url, default_model="llama3.2")
+        provider = OllamaProvider(self.base_url, auto_pull=True, default_model="llama3.2")
         provider.prepare(progress.append)
         self.assertEqual(FakeOllamaHandler.pulled, ["llama3.2"])
         self.assertTrue(any("llama3.2" in p and "25%" in p for p in progress), progress)

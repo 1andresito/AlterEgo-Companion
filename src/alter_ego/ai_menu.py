@@ -18,7 +18,8 @@ from .providers import OFFLINE_ID, PROVIDER_LABELS, ProviderError, tools_folder
 from .settings.config import Config
 
 
-def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_settings: Callable[[], None]) -> QMenu:
+def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_settings: Callable[[], None],
+                open_setup: Callable[[], None] | None = None) -> QMenu:
     menu = parent.addMenu("AI")
 
     # --- Provider ---
@@ -108,6 +109,8 @@ def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_setti
     menu.addAction("Open my files folder", open_files_folder)
 
     menu.addSeparator()
+    if open_setup is not None:
+        menu.addAction("Set up Ollama and my voice...", open_setup)
     menu.addAction("Test connection", test_connection)
     menu.addAction("Edit settings file...", edit_settings_file)
     return menu

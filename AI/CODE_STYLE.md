@@ -14,7 +14,7 @@ These are the conventions the existing code follows. New code should be indistin
 - Module layout: docstring, imports (stdlib, then PySide6, then `.` relative), constants in `UPPER_CASE` with a comment each, then classes. Sections inside a class are separated with `# ----- Section name -----` comments.
 - One concern per module, named for the thing it holds: `recorder.py` has `MicrophoneRecorder`, `player.py` has `SpeechPlayer`. Packages mirror each other: `providers/`, `speech/`, `voice/` each have an abstract interface (`base.py`, `transcriber.py`, `synthesizer.py`), concrete engines, and a `build_*()` factory in `__init__.py` that reads the `Config`.
 - Lines up to about 120 characters. Imports used only for typing still count as used.
-- Layers: `settings/` and `core/` know nothing about Qt widgets (they may use `QObject` and signals). `providers/` is standard library only, no SDKs. UI modules (`chat.py`, `character.py`, `*_menu.py`) never do slow work.
+- Layers: `settings/` and `core/` know nothing about Qt widgets (they may use `QObject` and signals). `providers/` is standard library only, no SDKs. UI modules (`chat.py`, `character.py`, `setup_wizard.py`, `*_menu.py`) never do slow work.
 
 ## Naming
 
@@ -32,6 +32,8 @@ These are the conventions the existing code follows. New code should be indistin
 
 - Decoupling is done with signals. A controller (`Assistant`, `PushToTalk`, `HandsFree`, `Speaker`) is a `QObject` with a `state_changed = Signal(object)` carrying an `Enum`, plus small purpose-named signals (`status`, `failed`, `transcribed`, ...). Observers connect; the controller never calls the UI.
 - Slow work: a `QThread` subclass with signals for results (`piece`, `done`, `failed`), created per job or long-lived with a `queue.Queue` of jobs. The GUI thread owns all state; the worker only emits. Workers are `deleteLater()`ed in a `finished` handler. On quit, `app.aboutToQuit` connects to each controller's `cancel()`/`stop()`/`shutdown()` so threads end before the process does.
+- Connect worker signals to bound methods of a GUI-thread `QObject`, not to lambdas: PySide runs a lambda on the emitting (worker) thread, a bound method is queued to its object's thread.
+- A worker whose owner can be garbage-collected (tests, short-lived runners) gets no Qt parent: a `QThread` destroyed with its parent while it is still finishing aborts the process.
 - Snapshot data before handing it to a worker (`tuple(history)`), never share live objects.
 - Enums that Qt renamed across versions (`QAudio` to `QtAudio`) are imported with a `try/except ImportError` and a comment.
 - Menus are rebuilt each time they open. Menu modules are functions `add_<name>_menu(parent, ..., config, apply_settings)`; every action saves to `config` and calls `apply_settings()` at once. Radio choices use `QActionGroup`. Device lists are filled in `aboutToShow`, so newly plugged-in devices appear.
@@ -50,11 +52,23 @@ These are the conventions the existing code follows. New code should be indistin
 ## Tests
 
 - `unittest`, one file per feature area in `tests/`, each with the header comment and the `sys.path.insert` + `QCoreApplication` boilerplate copied from an existing test file.
-- Fakes, not mocks: a `FakeRecorder`, `FakeTranscriber`, `FakePlayer` class with the same methods as the real one, plus fake HTTP servers (`HTTPServer` on port 0) for API engines and a fake `claude` script for Claude Code.
+- Fakes, not mocks: a `FakeRecorder`, `FakeTranscriber`, `FakePlayer` class with the same methods as the real one, plus fake HTTP servers (`HTTPServer` on port 0) for API engines, a fake `claude` script for Claude Code and a fake installer script for Ollama. Patching a module constant (a URL, a platform check) is fine when there is no other seam.
+- Widgets need a `QApplication`, but the test process already has a `QCoreApplication`; test a window in a subprocess with `QT_QPA_PLATFORM=offscreen` (see `tests/test_setup.py`).
 - Async flows are driven with `process_events_until(condition, timeout)`. Tests must pass with no network, microphone, speakers, model files or display, and write only to temporary folders.
 - Test names say the behaviour: `test_short_press_is_ignored`, `test_download_is_asked_for_not_done`.
 
 ## Documentation
 
-- The README is updated in the same change as the code. Settings defaults in the README match `DEFAULTS` exactly. The code layout tree lists every module with a one-line purpose.
-- Keep the README's voice: plain, concrete, second person for instructions, no marketing.
+Docs are updated in the same change as the code. Each file has one audience:
+
+| File | For | Keep in it |
+|---|---|---|
+| `README.md` | New users | Install, what it does, controls, choosing an AI, privacy, troubleshooting. Short and scannable; no internals |
+| `docs/SETTINGS.md` | Users who edit the settings file | Every key, with defaults matching `DEFAULTS` exactly |
+| `docs/FROM_SOURCE.md` | People running or building from source | Setup, the character voice and GPU, tests, local builds |
+| `docs/CUSTOMIZING.md` | People changing the look or personality | Personality JSON, artwork, icons |
+| `CHANGELOG.md` | Everyone | What changed per version, in user terms; the release notes come from here |
+| `AI/` | Contributors and their assistants | Rules, architecture (the code tree lists every module), style, decisions, plans, releasing |
+
+- Write plainly and concretely, second person for instructions, no marketing. Name menu paths exactly (**AI** -> **Set up Ollama and my voice...**).
+- `AI/` is a guide, not a diary. Write what is true and why, not when it happened. History goes in `CHANGELOG.md`, lasting reasons in `DECISIONS.md`.

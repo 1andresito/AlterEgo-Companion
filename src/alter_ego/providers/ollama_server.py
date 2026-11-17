@@ -47,8 +47,8 @@ WINDOWS_IMAGES = ("ollama app.exe", "ollama.exe", "ollama_llama_server.exe")
 LEAN_ENV = {"OLLAMA_MAX_LOADED_MODELS": "1", "OLLAMA_NUM_PARALLEL": "1"}
 
 NOT_INSTALLED_MESSAGE = (
-    f"Ollama isn't installed on this computer, so I have no AI model to think with. "
-    f"Get it from {DOWNLOAD_URL}, then talk to me again."
+    "Ollama isn't installed on this computer, so I have no AI model to think with. "
+    "I can install it for you: AI -> Set up Ollama and my voice..."
 )
 
 

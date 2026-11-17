@@ -1,7 +1,7 @@
 # Expression artwork
 
-Eight PNG files, one per expression (see the "Expression artwork" section of
-the main README for how they are used):
+Eight PNG files, one per expression (see "Expression artwork" in
+docs/CUSTOMIZING.md for how they are used):
 
     AlterEgo_Happy.png        AlterEgo_Talk.png
     AlterEgo_PassionTalk.png  AlterEgo_ShyTalk.png

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Alter Ego
+Comment=A desktop companion that chats, listens and talks back, all on your computer
+Exec=@EXEC@
+Icon=alter-ego
+Terminal=false
+Categories=Utility;
+StartupWMClass=AlterEgo

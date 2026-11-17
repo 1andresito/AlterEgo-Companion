@@ -63,7 +63,7 @@ def create_provider(
             base_url=str(config.get("ollama", "base_url", "http://localhost:11434")),
             command=str(config.get("ollama", "command", "ollama") or "ollama"),
             auto_start=bool(config.get("ollama", "auto_start", True)),
-            auto_pull=bool(config.get("ollama", "auto_pull", True)),
+            auto_pull=bool(config.get("ollama", "auto_pull", False)),
             default_model=str(config.get("ollama", "default_model", "") or ""),
             tools=tools,
         )

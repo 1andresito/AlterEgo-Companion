@@ -290,10 +290,11 @@ class ProviderResponder:
             return configured
         models = self.provider.list_models()
         if not models:
-            raise ProviderError(
-                f"{self.provider.describe()} has no models installed. "
-                "Install one first, for example: ollama pull llama3.2"
-            )
+            if self.provider.id == "ollama":
+                raise ProviderError(
+                    "I don't have an AI model to think with yet. Pick one under AI -> Set up Ollama and my voice..."
+                )
+            raise ProviderError(f"{self.provider.describe()} has no models installed. Install one first.")
         return models[0]
 
     def test_connection(self) -> str:
