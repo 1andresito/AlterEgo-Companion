@@ -17,6 +17,7 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 - Push to talk: hold **F9** anywhere in Windows (or the **talk** button in the chat), speak, release. The words are recognised locally with Whisper and sent as a message. The key, microphone, engine and model are chosen from the **Voice** menu.
 - Hands-free (opt-in): say **"Hey Alter Ego"** and the character appears, listens for what you want, answers, and keeps listening a few seconds for a follow-up. The wake phrase is detected locally; no audio leaves the computer and none is stored.
 - Spoken replies: Alter Ego reads every reply aloud with a local, offline text-to-speech model (Kokoro). Speech starts after the first sentence, the chat text types along with the voice, the delivery follows the mood (shy replies are softer and slower, passionate ones quicker), and a light "inside a monitor" tone can be switched on or off. Pitch, speed, volume, voice and output device are chosen from the **Spoken replies** menu; an OpenAI-compatible speech API can be used instead.
+- Character voice (optional): the Kokoro speech is converted on your CPU with an RVC voice model of your choosing, so Alter Ego can speak in a specific character's voice, offline and free.
 - Persistent memory: the conversation is saved in a local SQLite file and restored on the next start, with day dividers in the chat and a "welcome back" line after a long pause. Switch it off or wipe it from the **Memory** menu.
 - With Claude via Claude Code, the Claude session is resumed after a restart too, so Claude remembers as much as the chat panel shows.
 - The AI chooses an expression for each reply; the character's face follows (thinking → reply expression → back to idle).
@@ -37,10 +38,11 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 ## Requirements
 
 - Windows 10 or 11, or Linux (tested on Fedora with Wayland). macOS is untested.
-- Python 3.10+ (3.14 works)
+- Python 3.10+ (3.14 works; the optional character voice needs 3.10 to 3.13, so 3.12 is the safe choice)
 - A working desktop session; on Linux, a system tray (for example Waybar's tray module) is useful but not required
 - For push to talk: a microphone. `requirements.txt` includes [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local speech recognition; the first use downloads the speech model (about 150 MB for `base`). Everything else works without it.
 - For spoken replies: speakers or headphones. `requirements.txt` includes [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) for local text-to-speech; the voice files (about 340 MB) are downloaded from the menu when you ask for them, never silently. Everything else works without it.
+- For the character voice (optional): `requirements-character-voice.txt` adds [infer-rvc-python](https://github.com/R3gm/infer_rvc_python) and CPU PyTorch (about 250 MB), plus two base models downloaded from the menu (535 MB), plus a voice model of the character that you obtain yourself. See [Character voice](#character-voice).
 
 ## Run from source
 
@@ -63,11 +65,17 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 On Linux (Fedora, Ubuntu, ...), from a terminal in this folder:
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv     # or python3; 3.12 keeps the character voice possible
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 python main.py
+```
+
+For the character voice, add (on any platform, inside the activated environment):
+
+```bash
+pip install -r requirements-character-voice.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 ```
 
 Linux notes: audio goes through PipeWire/PulseAudio via Qt, nothing extra to install. The global push-to-talk key is Windows-only for now; on Linux hold the **talk** button in the chat panel, or use hands-free mode. If your compositor has no system tray, Alter Ego still runs: right-click the character for the menu.
@@ -151,6 +159,12 @@ If Ollama is not installed, Alter Ego says so in the chat with the download link
     "synthesizer": "kokoro",
     "kokoro_voice": "alter_ego",
     "kokoro_model": "standard",
+    "rvc_model": "",
+    "rvc_index": "",
+    "rvc_pitch": 0,
+    "rvc_index_rate": 0.5,
+    "rvc_f0_method": "rmvpe+",
+    "rvc_threads": 0,
     "openai_model": "tts-1",
     "openai_voice": "nova",
     "pitch": 2,
@@ -249,6 +263,20 @@ The **Spoken replies** menu:
 - **Speed**, **Volume**, **Speakers:** tempo (`speed`, 0.6 to 1.6), loudness (`volume`, 0 to 1) and the output device (`speaker`, a device name or empty for the system default).
 - **Computer-voice effect:** a light "speaking from inside a monitor" tone: no deep lows, softened highs, a faint tiny-speaker ring and a touch of saturation, mixed in gently so the words stay clear (`crt_effect`). Switch it off for the plain voice.
 - **Prepare my voice** loads the model ahead of time (the first reply after a start otherwise waits about two seconds); **Test my voice** says a line.
+
+### Character voice
+
+The blend above is *in the spirit of* the character. To make Alter Ego sound like a specific character, switch **Engine** to **Local Kokoro + character voice**. Kokoro still says the words; a second model, RVC (Retrieval-based Voice Conversion), then changes the timbre to that of a voice model trained on the character, so the delivery stays Kokoro's and the voice becomes the character's. Everything runs on your CPU; nothing is sent anywhere and nothing costs anything.
+
+You need three things:
+
+1. The package: `pip install -r requirements-character-voice.txt` with the extra index flags shown under [Run from source](#run-from-source). It needs Python 3.10 to 3.13.
+2. The two base models every RVC voice shares (the RMVPE pitch tracker and the HuBERT speech encoder, 535 MB): **Spoken replies** → **Download my voice**. They go into `data/voices/rvc/`.
+3. A voice model of the character: a `.pth` file, usually with a `.index` file next to it, trained by someone on the character's lines. Alter Ego ships none and links to none; people share them on sites such as Hugging Face. Choose it with **Spoken replies** → **Character voice model...**; the `.index` in the same folder is picked up automatically (or set `rvc_index`). Whether using a model of a real voice actor's voice is appropriate is your call; this is a private, non-commercial fan project, and the model stays on your computer.
+
+Settings: **Character voice pitch** shifts the converted voice in semitones (`rvc_pitch`; a female Kokoro voice converted to a high, young voice usually wants 0 to +4); **Character voice quality** picks the pitch tracker (`rvc_f0_method`: `rmvpe+` is best, `pm` is fastest and rougher); `rvc_index_rate` (0 to 1) sets how strongly the model's index pulls the timbre toward its training voice; `rvc_threads` limits the CPU threads (0 = all but two). The Kokoro **Pitch** setting does not apply to the character voice. **Computer-voice effect** still does.
+
+Speed: on a recent laptop CPU a sentence converts in about one and a half times its own length, on top of Kokoro's half. With sentence-by-sentence playback the first short sentence is heard a few seconds after the text starts, and later sentences follow with small gaps on long replies. Keep replies short (the personality already asks for that), or choose `pm` for speed. The first conversion after a start loads the models and takes 10 to 30 seconds; **Prepare my voice** does that ahead of time.
 
 If the package is missing, the files are not downloaded, the speakers cannot be opened or the model fails, Alter Ego says so once in the chat and stays quiet until the settings change; the text replies keep working as before.
 
@@ -360,6 +388,7 @@ AlterEgo-Companion/
 │       │   ├── text.py           # Cuts a streaming reply into sentences
 │       │   ├── effects.py        # Pitch lift (resampling), the CRT tone, PCM conversion
 │       │   ├── kokoro_local.py   # kokoro-onnx, offline; voice presets; downloads the model files
+│       │   ├── rvc_local.py      # Character voice: Kokoro speech converted with an RVC model (infer-rvc-python)
 │       │   ├── openai_tts.py     # /audio/speech on an OpenAI-compatible API
 │       │   ├── player.py         # SpeechPlayer (Qt Multimedia audio sink)
 │       │   └── speaker.py        # Speaker: conversation -> sentences -> worker thread -> player, in order
@@ -376,6 +405,7 @@ AlterEgo-Companion/
 │   └── fake_ollama.py        # Stand-in for `ollama serve`
 ├── main.py                   # Entry point: python main.py
 ├── requirements.txt
+├── requirements-character-voice.txt  # Optional: RVC voice conversion (PyTorch, Python 3.10 to 3.13)
 ├── LICENSE
 └── README.md
 ```
@@ -433,7 +463,7 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 
 - **Microphone:** by default opened only while the push-to-talk key or the talk button is held, and closed the moment you let go. No audio files are written to disk. With the default local engine the recording never leaves your computer; with the API engine it is uploaded to the service at `base_url`. Switch voice input off entirely under **Voice** → **Push to talk**.
   - **Hands-free** (off by default) keeps the microphone open while the app runs. Audio is analysed in memory and discarded; only after the wake phrase is heard is the next thing you say treated as a message. The wake-phrase check is always local. See [Hands-free](#hands-free).
-- **Speakers:** with the default local engine, the voice is produced on your computer and nothing is sent anywhere. With the API engine, the text of every reply (not your messages) is sent to the service at `base_url`. The one-time voice download comes from the kokoro-onnx GitHub release and happens only when you choose it in the menu.
+- **Speakers:** with the default local engine, the voice is produced on your computer and nothing is sent anywhere. With the API engine, the text of every reply (not your messages) is sent to the service at `base_url`. The one-time voice download comes from the kokoro-onnx GitHub release and happens only when you choose it in the menu. The character voice is also fully local; its two base models come from Hugging Face, again only when you choose **Download my voice**, and the character's own model is a file you placed on the computer yourself.
 - **Network:** depends on the provider you choose, and nothing is sent anywhere else.
   - *Offline:* no network at all.
   - *Ollama:* your messages, the conversation history and the personality prompt go to the Ollama server in your settings (`http://localhost:11434` by default, your own computer). The one-time model download comes from ollama.com through the Ollama server; nothing of yours is sent with it.

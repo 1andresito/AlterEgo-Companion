@@ -30,6 +30,7 @@ from alter_ego.core.conversation import Conversation, Message, Role  # noqa: E40
 from alter_ego.expressions import Expression  # noqa: E402
 from alter_ego.settings.config import Config  # noqa: E402
 from alter_ego.voice import (  # noqa: E402
+    CharacterVoiceSynthesizer,
     KokoroSynthesizer,
     OpenAISynthesizer,
     Speaker,
@@ -43,6 +44,7 @@ from alter_ego.voice import (  # noqa: E402
 from alter_ego.voice.effects import crt_voice, from_pcm16, pitch_factor, resample, to_pcm16, with_tail  # noqa: E402
 from alter_ego.voice.kokoro_local import PRESET_VOICE, VOICES, voice_language  # noqa: E402
 from alter_ego.voice.player import PlaybackError  # noqa: E402
+from alter_ego.voice.rvc_local import BASE_DOWNLOAD_MB, HUBERT_FILES, MODEL_HINT, find_index  # noqa: E402
 from alter_ego.voice.speaker import EXPRESSION_SPEED, NO_SYNTHESIZER_MESSAGE  # noqa: E402
 from alter_ego.voice.text import MIN_CHARS, speakable, take_sentences  # noqa: E402
 
@@ -183,6 +185,145 @@ class KokoroTests(unittest.TestCase):
         self.assertEqual(voice_language("bf_emma"), "en-gb")
         self.assertEqual(voice_language("jf_alpha"), "ja")
         self.assertEqual(KokoroSynthesizer("no_such_voice").voice, PRESET_VOICE)
+
+
+# ----- Character voice: Kokoro + RVC with a fake Kokoro and a fake converter -----
+
+class FakeKokoro:
+    def __init__(self, needs_download=False):
+        self.needs_download = needs_download
+        self.download_size_mb = 338 if needs_download else 0
+        self.ready = False
+        self.spoken: list[tuple[str, float]] = []
+
+    def prepare(self):
+        self.ready = True
+        self.needs_download = False
+
+    def synthesize(self, text, speed=1.0):
+        self.spoken.append((text, speed))
+        return tone(0.5, rate=24000) if text.strip() else Speech.empty()
+
+
+class FakeConverter:
+    """Returns 16-bit samples at 40 kHz, like the real package, twice as long as the input."""
+
+    def __init__(self):
+        self.conf = None
+        self.calls = 0
+
+    def apply_conf(self, **kwargs):
+        self.conf = kwargs
+
+    def generate_from_cache(self, audio_data, tag):
+        samples, rate = audio_data
+        self.calls += 1
+        import numpy as np
+
+        return (np.full(len(samples) * 40000 // rate, 16384, dtype=np.int16), 40000)
+
+
+class CharacterVoiceTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.model = self.root / "character.pth"
+        self.model.write_bytes(b"fake")
+
+    def base_models(self, present=True):
+        rvc = self.root / "rvc"
+        (rvc / "hubert_base").mkdir(parents=True, exist_ok=True)
+        if present:
+            (rvc / "rmvpe.pt").write_bytes(b"x")
+            for name in HUBERT_FILES:
+                (rvc / "hubert_base" / name).write_bytes(b"x")
+        return rvc
+
+    def make(self, converter=None, kokoro=None, **kwargs):
+        converter = converter or FakeConverter()
+        engine = CharacterVoiceSynthesizer(
+            kokoro or FakeKokoro(), model_path=kwargs.pop("model_path", self.model), models_dir=self.base_models(),
+            converter_factory=lambda rmvpe, hubert: converter, **kwargs,
+        )
+        return engine, converter
+
+    def test_download_accounting(self):
+        engine = CharacterVoiceSynthesizer(FakeKokoro(), self.model, models_dir=self.root / "rvc")
+        self.assertTrue(engine.needs_download)
+        self.assertEqual(engine.download_size_mb, BASE_DOWNLOAD_MB)
+        engine = CharacterVoiceSynthesizer(FakeKokoro(needs_download=True), self.model, models_dir=self.base_models())
+        self.assertTrue(engine.needs_download)
+        self.assertEqual(engine.download_size_mb, 338)
+        engine = CharacterVoiceSynthesizer(FakeKokoro(), self.model, models_dir=self.base_models())
+        self.assertFalse(engine.needs_download)
+        self.assertFalse(engine.shape_pitch)
+        self.assertIn("'character'", engine.describe())
+
+    def test_converts_kokoro_speech_with_the_chosen_settings(self):
+        (self.root / "character.index").write_bytes(b"i")
+        engine, converter = self.make(pitch_semitones=2.4, index_rate=0.7, f0_method="pm")
+        speech = engine.synthesize("Hello there.", speed=0.9)
+        self.assertEqual(speech.sample_rate, 40000)
+        self.assertAlmostEqual(speech.duration, 0.5, places=3)
+        self.assertAlmostEqual(speech.samples[0], 0.5, places=3)  # int16 16384 -> 0.5
+        self.assertEqual(converter.conf["pitch_lvl"], 2)
+        self.assertEqual(converter.conf["pitch_algo"], "pm")
+        self.assertEqual(converter.conf["index_influence"], 0.7)
+        self.assertEqual(converter.conf["file_index"], str(self.root / "character.index"))
+        self.assertEqual(engine.kokoro.spoken, [("Hello there.", 0.9)])
+        engine.synthesize("   ")  # empty speech is passed through untouched
+        self.assertEqual(converter.calls, 1)
+        self.assertFalse(engine.ready)  # Kokoro itself has not been prepared yet
+        self.assertIn("'character'", engine.prepare())
+        self.assertTrue(engine.ready)
+
+    def test_index_is_found_next_to_the_model(self):
+        self.assertIsNone(find_index(self.model))
+        other = self.root / "added_IVF256_Flat_nprobe_1_v2.index"
+        other.write_bytes(b"i")
+        self.assertEqual(find_index(self.model), other)
+        (self.root / "second.index").write_bytes(b"i")
+        self.assertIsNone(find_index(self.model))  # two candidates: no guessing
+        (self.root / "character.index").write_bytes(b"i")
+        self.assertEqual(find_index(self.model), self.root / "character.index")
+
+    def test_missing_model_package_and_base_files_are_explained(self):
+        engine, _ = self.make(model_path="")
+        with self.assertRaises(SynthesisError) as caught:
+            engine.synthesize("x")
+        self.assertIn(MODEL_HINT, str(caught.exception))
+        engine, _ = self.make(model_path=self.root / "gone.pth")
+        with self.assertRaises(SynthesisError) as caught:
+            engine.synthesize("x")
+        self.assertIn("can't find", str(caught.exception))
+
+        engine = CharacterVoiceSynthesizer(FakeKokoro(), self.model, models_dir=self.root / "empty")
+        with self.assertRaises(SynthesisError) as caught:
+            engine.synthesize("x")
+        self.assertIn("Download my voice", str(caught.exception))
+
+        saved = sys.modules.get("infer_rvc_python")
+        sys.modules["infer_rvc_python"] = None
+        try:
+            engine = CharacterVoiceSynthesizer(FakeKokoro(), self.model, models_dir=self.base_models())
+            with self.assertRaises(SynthesisError) as caught:
+                engine.synthesize("x")
+            self.assertIn("requirements-character-voice.txt", str(caught.exception))
+        finally:
+            if saved is None:
+                del sys.modules["infer_rvc_python"]
+            else:
+                sys.modules["infer_rvc_python"] = saved
+
+    def test_from_config(self):
+        engine = build_synthesizer(Config(Path("x.json"), {"voice": {
+            "synthesizer": "kokoro_rvc", "rvc_model": str(self.model), "rvc_pitch": "3", "models_dir": str(self.root),
+        }}))
+        self.assertIsInstance(engine, CharacterVoiceSynthesizer)
+        self.assertEqual(engine.pitch_semitones, 3)
+        self.assertEqual(engine.rmvpe_path, self.root / "rvc" / "rmvpe.pt")
+        self.assertEqual(engine.kokoro.model_path.parent, self.root)
 
 
 # ----- API engine against a fake server -----

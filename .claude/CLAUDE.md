@@ -9,7 +9,8 @@ All guidance for AI assistants lives in the `AI/` folder, shared by every tool. 
 
 Claude Code specifics:
 
-- Use the project virtual environment: `.venv/bin/python` (create it with `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` if missing).
+- Use the project virtual environment: `.venv/bin/python`, which is Python 3.12 (create it with `python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt` if missing; 3.14 breaks the optional character voice).
+- Heavy experiments (PyTorch, benchmarks) only with `nice -n 19`, at most 6 threads, one at a time, in the background.
 - Tests: `QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v`. They must pass before you report a task as done.
 - To check the real app, run `.venv/bin/python -u main.py` in the background or with a `timeout`; it is a desktop window plus tray icon and keeps running until quit.
 - Keep the README in step with every user-visible change, as `AI/README.md` describes.

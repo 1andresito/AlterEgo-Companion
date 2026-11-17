@@ -27,6 +27,7 @@ A desktop companion built with Python and PySide6: the character Alter Ego from 
 ## Before you finish a task
 
 - Run the tests: `python -m unittest discover -s tests -v` (on a machine without a display: `QT_QPA_PLATFORM=offscreen`). Add tests for anything non-visual you added, using fakes, never a real network, microphone, speaker or model.
+- Heavy experiments (PyTorch models, benchmarks) run with `nice -n 19` and at most 6 threads, in the background, one at a time. A full-speed run once made the user's desktop unusable and pushed the machine into swap.
 - Update the README for any user-visible change: the features list, the relevant section, the controls table, the settings defaults, the code layout tree, the roadmap and the privacy section. The README is the manual; it must stay exact.
 - Update `PLANS.md`: move what you did to "Done", note anything you left open.
 - Bump `src/alter_ego/__init__.py` only for a release, and only if asked. Do not commit unless asked; when you do, the message style is `vX.Y.Z short description`.

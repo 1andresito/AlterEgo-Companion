@@ -7,20 +7,24 @@ Voice and Memory menus. Every change is saved at once and applied through
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtGui import QActionGroup
-from PySide6.QtWidgets import QMenu
+from PySide6.QtWidgets import QFileDialog, QMenu
 
 from .expressions import Expression
 from .settings.config import Config
 from .voice import SYNTHESIZER_LABELS, Speaker
 from .voice.kokoro_local import ENGLISH_VOICES, MODELS, OTHER_VOICES, VOICES
 from .voice.player import DEFAULT_DEVICE, SpeechPlayer
+from .voice.rvc_local import DEFAULT_F0_METHOD, F0_METHODS
 
 TEST_LINE = "Testing, testing... can you hear me? Um, this is what my voice sounds like. I hope it's okay."
 
 PITCHES = [(-2, "Lower"), (0, "Natural"), (1, "A little higher"), (2, "Higher (default)"), (4, "Highest")]
+CHARACTER_PITCHES = [(-6, "-6 semitones"), (-3, "-3"), (0, "As trained (default)"), (2, "+2"), (4, "+4"), (6, "+6"), (12, "+12 (an octave)")]
+F0_LABELS = {"rmvpe+": "Best (rmvpe+)", "rmvpe": "Good (rmvpe)", "pm": "Fastest (pm, rougher)"}
 SPEEDS = [(0.85, "Slower"), (1.0, "Normal"), (1.15, "Faster")]
 VOLUMES = [(0.25, "25%"), (0.5, "50%"), (0.8, "80%"), (1.0, "100%")]
 
@@ -64,6 +68,25 @@ def add_speak_menu(
     radio_menu(
         menu.addMenu("Engine"), "synthesizer", list(SYNTHESIZER_LABELS.items()),
         str(config.get("voice", "synthesizer", "kokoro") or "kokoro"),
+    )
+
+    # --- Character voice (RVC): the user's own model file, its pitch and quality ---
+    def choose_model() -> None:
+        current = str(config.get("voice", "rvc_model", "") or "")
+        path, _ = QFileDialog.getOpenFileName(
+            None, "Choose the character's voice model", current, "RVC voice model (*.pth);;All files (*)"
+        )
+        if path:
+            config.set("voice", "rvc_index", "")  # Found next to the model again.
+            save("rvc_model", path)
+
+    model_name = str(config.get("voice", "rvc_model", "") or "")
+    model_name = Path(model_name).name if model_name else "none chosen"
+    menu.addAction(f"Character voice model... ({model_name})").triggered.connect(choose_model)
+    radio_menu(menu.addMenu("Character voice pitch"), "rvc_pitch", CHARACTER_PITCHES, int(round(number("rvc_pitch", 0))))
+    radio_menu(
+        menu.addMenu("Character voice quality"), "rvc_f0_method", [(m, F0_LABELS[m]) for m in F0_METHODS],
+        str(config.get("voice", "rvc_f0_method", DEFAULT_F0_METHOD) or DEFAULT_F0_METHOD),
     )
 
     # --- Voice (Kokoro): English voices first, the rest in a submenu ---

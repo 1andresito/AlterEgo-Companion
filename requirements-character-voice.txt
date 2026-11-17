@@ -1,0 +1,6 @@
+# Optional: the character voice (Spoken replies -> Engine -> Local Kokoro + character voice).
+# Needs Python 3.10 to 3.13 and downloads CPU PyTorch (about 250 MB). Install with:
+#   pip install -r requirements-character-voice.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+infer-rvc-python>=1.3
+# One of its dependencies still imports pkg_resources; this setuptools has it and satisfies PyTorch too.
+setuptools==80.9.0

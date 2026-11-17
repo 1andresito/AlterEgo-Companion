@@ -65,6 +65,12 @@ DEFAULTS: dict[str, Any] = {
         "synthesizer": "kokoro",        # "kokoro" = local and offline, "openai" = the API from the openai section
         "kokoro_voice": "alter_ego",    # "alter_ego" (the soft blend) or a Kokoro voice id such as "af_heart"
         "kokoro_model": "standard",     # "standard" (310 MB) or "small" (88 MB, a little faster and rougher)
+        "rvc_model": "",                # character voice: path to an RVC voice model (.pth) you obtained yourself
+        "rvc_index": "",                # its .index file; "" = the .index next to the model, if there is one
+        "rvc_pitch": 0,                 # semitones the converted voice is shifted; try 2 to 4 for a higher voice
+        "rvc_index_rate": 0.5,          # 0..1: how strongly the model's index pulls the timbre toward its training voice
+        "rvc_f0_method": "rmvpe+",      # pitch tracker: "rmvpe+" (best), "rmvpe", "pm" (fastest, roughest)
+        "rvc_threads": 0,               # CPU threads for the conversion; 0 = all but two
         "openai_model": "tts-1",        # the API's speech model
         "openai_voice": "nova",         # the API's voice name
         "pitch": 2,                     # semitones above the Kokoro voice's natural pitch (negative = lower); Kokoro only

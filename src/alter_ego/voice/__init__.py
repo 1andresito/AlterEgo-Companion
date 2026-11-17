@@ -11,6 +11,7 @@ from pathlib import Path
 from ..settings.config import Config, data_dir
 from .kokoro_local import KokoroSynthesizer
 from .openai_tts import OpenAISynthesizer
+from .rvc_local import CharacterVoiceSynthesizer
 from .player import SpeechPlayer
 from .speaker import DEFAULT_PITCH_SEMITONES, DEFAULT_SPEED, Speaker, SpeakingState, VoiceStyle
 from .synthesizer import Speech, SynthesisError, Synthesizer
@@ -18,6 +19,7 @@ from .synthesizer import Speech, SynthesisError, Synthesizer
 # synthesizer id -> label shown in menus.
 SYNTHESIZER_LABELS: dict[str, str] = {
     KokoroSynthesizer.id: KokoroSynthesizer.label,
+    CharacterVoiceSynthesizer.id: CharacterVoiceSynthesizer.label,
     OpenAISynthesizer.id: OpenAISynthesizer.label,
 }
 
@@ -41,12 +43,31 @@ def build_synthesizer(config: Config) -> Synthesizer | None:
             model=str(config.get("voice", "openai_model", "") or ""),
             voice=str(config.get("voice", "openai_voice", "") or ""),
         )
-    if kind != KokoroSynthesizer.id:
+    if kind not in (KokoroSynthesizer.id, CharacterVoiceSynthesizer.id):
         print(f"Warning: unknown voice synthesizer '{kind}' in settings. Using local Kokoro.")
-    return KokoroSynthesizer(
+    kokoro = KokoroSynthesizer(
         voice=str(config.get("voice", "kokoro_voice", "") or ""),
         model=str(config.get("voice", "kokoro_model", "") or ""),
         models_dir=models_dir(config),
+    )
+    if kind != CharacterVoiceSynthesizer.id:
+        return kokoro
+
+    def number(key: str, default: float) -> float:
+        try:
+            return float(config.get("voice", key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return CharacterVoiceSynthesizer(
+        kokoro,
+        model_path=str(config.get("voice", "rvc_model", "") or ""),
+        index_path=str(config.get("voice", "rvc_index", "") or ""),
+        pitch_semitones=number("rvc_pitch", 0.0),
+        index_rate=number("rvc_index_rate", 0.5),
+        f0_method=str(config.get("voice", "rvc_f0_method", "") or ""),
+        models_dir=models_dir(config) / "rvc",
+        threads=int(number("rvc_threads", 0)),
     )
 
 
@@ -65,6 +86,7 @@ def build_style(config: Config) -> VoiceStyle:
 
 
 __all__ = [
+    "CharacterVoiceSynthesizer",
     "KokoroSynthesizer",
     "OpenAISynthesizer",
     "SYNTHESIZER_LABELS",
