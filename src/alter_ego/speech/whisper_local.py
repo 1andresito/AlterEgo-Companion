@@ -8,6 +8,7 @@ that everything stays on this computer.
 
 from __future__ import annotations
 
+import os
 import threading
 
 from .audio import AudioClip
@@ -17,6 +18,7 @@ from .transcriber import Transcriber, TranscriptionError
 MODELS = ["tiny", "base", "small", "medium", "large-v3", "tiny.en", "base.en", "small.en"]
 DEFAULT_MODEL = "base"
 NO_SPEECH_LIMIT = 0.6
+THREADS = max(2, (os.cpu_count() or 4) // 2)  # Half the cores; recognising a short clip needs no more.
 INSTALL_HINT = "Install it with:  pip install faster-whisper  (or: pip install -r requirements.txt)"
 
 
@@ -91,7 +93,7 @@ class WhisperTranscriber(Transcriber):
                     f"I can't listen yet: the speech recognition package is missing. {INSTALL_HINT}"
                 ) from None
             try:
-                self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
+                self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8", cpu_threads=THREADS)
             except Exception as error:  # noqa: BLE001 - download/loading errors come in many types
                 raise TranscriptionError(
                     f"I couldn't load the speech model '{self._model_name}': {error}. "

@@ -1,4 +1,4 @@
-"""The "AI" submenu: choose a provider and model, test the connection.
+"""The "AI" submenu: choose a provider and model, what the AI may do, test the connection.
 
 Shared by the character's right-click menu and the tray menu. Changes are
 saved to the config file immediately and applied through `apply_settings`,
@@ -14,7 +14,7 @@ from PySide6.QtGui import QActionGroup, QDesktopServices
 from PySide6.QtWidgets import QMenu
 
 from .core.assistant import Assistant, ProviderResponder
-from .providers import OFFLINE_ID, PROVIDER_LABELS, ProviderError
+from .providers import OFFLINE_ID, PROVIDER_LABELS, ProviderError, tools_folder
 from .settings.config import Config
 
 
@@ -81,6 +81,31 @@ def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_setti
         if not config.path.exists():
             config.save()  # Write the defaults so the user has something to edit.
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config.path)))
+
+    # --- What the AI may do besides talking (core/tools.py) ---
+    menu.addSeparator()
+
+    def add_toggle(label: str, key: str) -> None:
+        action = menu.addAction(label)
+        action.setCheckable(True)
+        action.setChecked(bool(config.get("tools", key, True)))
+
+        def toggled(checked: bool, key=key) -> None:  # key=key freezes the loop value for this action.
+            config.set("tools", key, bool(checked))
+            config.save()
+            apply_settings()
+
+        action.toggled.connect(toggled)
+
+    add_toggle("Allow internet", "internet")
+    add_toggle("Let me work with files", "files")
+
+    def open_files_folder() -> None:
+        folder = tools_folder(config)
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    menu.addAction("Open my files folder", open_files_folder)
 
     menu.addSeparator()
     menu.addAction("Test connection", test_connection)

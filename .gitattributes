@@ -1,0 +1,2 @@
+assets/voice/*.pth filter=lfs diff=lfs merge=lfs -text
+assets/voice/*.index filter=lfs diff=lfs merge=lfs -text

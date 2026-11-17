@@ -40,6 +40,12 @@ DEFAULTS: dict[str, Any] = {
         "api_key": "",                            # or set the OPENAI_API_KEY environment variable
         "model": "",
     },
+    "tools": {
+        "internet": True,    # let the AI look things up online when a question needs it (AI -> Allow internet)
+        "files": True,       # let the AI read and write files in one folder, asking before the first change
+        "folder": "",        # "" = Documents/Alter Ego; the only folder the AI may touch
+        "search_url": "",    # "" = Wikipedia and DuckDuckGo instant answers; or a SearXNG server for the whole web
+    },
     "memory": {
         "enabled": True,         # save conversations to data/memory.db and restore them on start
         "context_messages": 30,  # how many recent messages the AI sees; 0 = all of them
@@ -58,29 +64,27 @@ DEFAULTS: dict[str, Any] = {
         "wake_model": "tiny",           # the small Whisper model that listens for the wake phrase
         "wake_sensitivity": "normal",   # "low", "normal" or "high": how quiet speech may be and still be noticed
         "awake_seconds": 3,             # seconds of silence after the wake phrase before it stops listening
-        "follow_up_seconds": 3,         # seconds of silence after a reply before it stops listening; 0 = none
+        "interrupt_by_voice": False,    # hands-free: talking over a reply to a hands-free request stops it (opt-in)
     },
     "voice": {
+        # Alter Ego has one voice, fixed in the code; these keys only say whether, how loud and where.
         "enabled": True,                # speak replies out loud (the voice files are downloaded on request, not silently)
-        "synthesizer": "kokoro",        # "kokoro" = local and offline, "openai" = the API from the openai section
-        "kokoro_voice": "alter_ego",    # "alter_ego" (the soft blend) or a Kokoro voice id such as "af_heart"
-        "kokoro_model": "standard",     # "standard" (310 MB) or "small" (88 MB, a little faster and rougher)
-        "rvc_model": "",                # character voice: path to an RVC voice model (.pth) you obtained yourself
-        "rvc_index": "",                # its .index file; "" = the .index next to the model, if there is one
-        "rvc_pitch": 0,                 # semitones the converted voice is shifted; try 2 to 4 for a higher voice
-        "rvc_index_rate": 0.5,          # 0..1: how strongly the model's index pulls the timbre toward its training voice
-        "rvc_f0_method": "rmvpe+",      # pitch tracker: "rmvpe+" (best), "rmvpe", "pm" (fastest, roughest)
-        "rvc_threads": 0,               # CPU threads for the conversion; 0 = all but two
-        "openai_model": "tts-1",        # the API's speech model
-        "openai_voice": "nova",         # the API's voice name
-        "pitch": 2,                     # semitones above the Kokoro voice's natural pitch (negative = lower); Kokoro only
-        "speed": 1.0,                   # tempo: 0.8 slower ... 1.2 faster
         "volume": 0.8,                  # 0.0 .. 1.0
-        "crt_effect": True,             # a light "speaking from inside a monitor" tone
         "speaker": "",                  # "" = system default output, otherwise a device name from the menu
-        "models_dir": "",               # "" = data/voices; where the Kokoro files are kept
+        "models_dir": "",               # "" = data/voices; where the downloaded Kokoro and RVC base files are kept
     },
 }
+
+
+def assets_dir() -> Path:
+    """Locate the assets folder, both from a source checkout and a PyInstaller build."""
+    if getattr(sys, "frozen", False):
+        # PyInstaller unpacks bundled data into sys._MEIPASS.
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    else:
+        # src/alter_ego/settings/config.py -> project root is three folders up.
+        base = Path(__file__).resolve().parents[3]
+    return base / "assets"
 
 
 def data_dir() -> Path:

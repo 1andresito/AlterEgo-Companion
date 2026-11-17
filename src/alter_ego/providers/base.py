@@ -40,13 +40,15 @@ class Provider(ABC):
         messages: list[ChatMessage],
         model: str,
         cancelled: Callable[[], bool],
+        progress: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
         """Generate a reply, yielding pieces of text as they arrive.
 
         `messages` is the full conversation so far, system prompt first. A
         provider that keeps its own history (a CLI session, for example) may
         use only the last message. Check `cancelled()` between pieces and stop
-        early when it returns True. Raises ProviderError.
+        early when it returns True. `progress` takes short status text while a
+        tool runs ("Searching the web..."); "" clears it. Raises ProviderError.
         """
 
     def test_connection(self) -> str:
@@ -59,6 +61,12 @@ class Provider(ABC):
 
         Runs on a worker thread. Reports what it is doing through `progress`
         (short text for the chat panel). Raises ProviderError.
+        """
+
+    def load_model(self, model: str) -> None:
+        """Get `model` into memory now, so the first reply does not wait for it. Worker thread.
+
+        Only a head start: providers without such a step do nothing. Raises ProviderError.
         """
 
     def prepare(self, progress: Callable[[str], None]) -> None:

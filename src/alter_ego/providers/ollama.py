@@ -7,6 +7,9 @@ dependency. Three endpoints are used:
   POST /api/chat   -> chat completion, streamed as one JSON object per line
   POST /api/pull   -> download a model, progress streamed the same way
 
+When the user allowed it (AI -> Allow internet / Let me work with files) the
+model is offered the tools in core/tools.py through Ollama's tool calling.
+
 Alter Ego also looks after the server (see ollama_server.py): when Ollama is
 chosen it starts `ollama serve` if nothing answers locally, and before the
 first reply it downloads a default model if none is installed, so a fresh
@@ -16,19 +19,25 @@ Ollama install works without a terminal.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import urllib.error
 import urllib.request
 from typing import Callable, Iterator
 
+from ..core.tools import ToolBox, progress_text
 from .base import ChatMessage, Provider, ProviderError
-from .ollama_server import DEFAULT_COMMAND, is_local, ollama_server
+from .ollama_server import DEFAULT_COMMAND, direct_url, is_local, ollama_server
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_MODEL = "llama3.2"  # Small, general, about 2 GB: what the README suggests for chatting.
 CONNECT_TIMEOUT_S = 10
 STREAM_TIMEOUT_S = 120
 PULL_TIMEOUT_S = 600  # Between progress lines, not for the whole download.
+MAX_TOOL_ROUNDS = 4   # Tool calls in a row before the model must answer in words.
+TEMPERATURE = 0.6     # A little below Ollama's 0.8: fewer invented facts, still warm.
+KEEP_ALIVE = "30m"    # How long the model stays loaded after a reply; reloading it is what made replies slow.
+LOAD_TIMEOUT_S = 120  # Loading a model from disk into memory can take a while on a slow drive.
 
 
 class OllamaProvider(Provider):
@@ -42,12 +51,15 @@ class OllamaProvider(Provider):
         auto_start: bool = True,
         auto_pull: bool = True,
         default_model: str = DEFAULT_MODEL,
+        tools: ToolBox | None = None,
     ):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = direct_url(base_url.rstrip("/"))  # 127.0.0.1, not localhost: two seconds faster per request
         self.command = command
         self.auto_start = auto_start
         self.auto_pull = auto_pull
         self.default_model = default_model or DEFAULT_MODEL
+        self.tools = tools if tools is not None and tools.enabled else None
+        self._no_tools: set[str] = set()  # Models that said they cannot use tools.
 
     def describe(self) -> str:
         return f"Ollama at {self.base_url}"
@@ -58,6 +70,16 @@ class OllamaProvider(Provider):
         """Start the local server if nothing answers (only when allowed and only locally)."""
         if self.auto_start and is_local(self.base_url):
             ollama_server.ensure_running(self.base_url, self.command, progress)
+
+    def load_model(self, model: str) -> None:
+        """Load the model now: a /api/generate request without a prompt is Ollama's way to do that."""
+        response = self._open("POST", "/api/generate", {"model": model, "keep_alive": KEEP_ALIVE}, timeout=LOAD_TIMEOUT_S)
+        try:
+            response.read()
+        except OSError as error:
+            raise ProviderError(self._lost_connection(error)) from None
+        finally:
+            response.close()
 
     def prepare(self, progress: Callable[[str], None]) -> None:
         """Start the server if needed, then download the default model if no model is installed."""
@@ -101,12 +123,76 @@ class OllamaProvider(Provider):
         messages: list[ChatMessage],
         model: str,
         cancelled: Callable[[], bool],
+        progress: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
-        payload = {
+        """Stream the reply; when the model asks for a tool, run it and let the model continue.
+
+        Each round is one /api/chat request. A round that ends with tool calls
+        gets the results appended as "tool" messages and is followed by another
+        round, at most MAX_TOOL_ROUNDS times, so a confused model cannot loop.
+        """
+        chat = [{"role": m.role, "content": m.content} for m in messages]
+        tools = self.tools.specs() if self.tools is not None and model not in self._no_tools else []
+        for round_number in range(MAX_TOOL_ROUNDS + 1):
+            offer = tools if round_number < MAX_TOOL_ROUNDS else []  # The last round must answer in words.
+            calls: list[dict] = []
+            text = ""
+            holding = bool(offer)  # Text that may turn out to be a tool call written as JSON is held back.
+            try:
+                for piece, call in self._stream_round(chat, model, offer, cancelled):
+                    if call is not None:
+                        calls.append(call)
+                        continue
+                    text += piece
+                    if holding and _may_be_json_call(text):
+                        continue
+                    if holding:
+                        holding = False
+                        yield text  # It is ordinary words after all: show everything held so far.
+                    else:
+                        yield piece
+                if holding and text:
+                    written = _json_call(text, offer)
+                    if written is not None and not calls:
+                        calls.append(written)
+                        text = ""
+                    else:
+                        yield text
+            except ProviderError as error:
+                if offer and "does not support tools" in str(error):
+                    # Older or tiny models cannot use tools; remember that and just chat.
+                    print(f"Alter Ego: the Ollama model '{model}' can't use tools; chatting without them.")
+                    self._no_tools.add(model)
+                    tools = []
+                    continue
+                raise
+            if not calls or cancelled():
+                return
+            chat.append({"role": "assistant", "content": text, "tool_calls": calls})
+            for call in calls:
+                function = call.get("function") or {}
+                name = str(function.get("name", ""))
+                args = function.get("arguments") or {}
+                if progress:
+                    progress(progress_text(name, args if isinstance(args, dict) else {}))
+                result = self.tools.run(name, args) if self.tools is not None else "Error: no tools."
+                chat.append({"role": "tool", "tool_name": name, "content": result})
+            if progress:
+                progress("")
+            if text and not text[-1].isspace():
+                yield " "  # The next round's words follow on from what was already said.
+
+    def _stream_round(self, chat: list[dict], model: str, tools: list[dict], cancelled: Callable[[], bool]):
+        """One /api/chat request. Yields (text, None) for words and ("", call) for each tool call."""
+        payload: dict = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": chat,
             "stream": True,
+            "keep_alive": KEEP_ALIVE,
+            "options": {"temperature": TEMPERATURE},
         }
+        if tools:
+            payload["tools"] = tools
         response = self._open("POST", "/api/chat", payload, timeout=STREAM_TIMEOUT_S)
         try:
             # Each line is a complete JSON object; the last one has "done": true.
@@ -122,9 +208,12 @@ class OllamaProvider(Provider):
                     continue  # Ignore anything that is not JSON rather than crash.
                 if "error" in chunk:
                     raise ProviderError(f"Ollama reported an error: {chunk['error']}")
-                text = chunk.get("message", {}).get("content", "")
+                message = chunk.get("message") or {}
+                for call in message.get("tool_calls") or []:
+                    yield "", call
+                text = message.get("content", "")
                 if text:
-                    yield text
+                    yield text, None
                 if chunk.get("done"):
                     return
         except socket.timeout:
@@ -154,6 +243,13 @@ class OllamaProvider(Provider):
             raise ProviderError(f"I couldn't connect to Ollama at {self.base_url}: {reason}") from None
         except socket.timeout:
             raise ProviderError(f"Ollama at {self.base_url} took too long to answer.") from None
+        except OSError as error:
+            # A server that closes the connection mid-request (stopping, crashing) raises a plain
+            # ConnectionResetError on Windows, not a URLError.
+            raise ProviderError(self._lost_connection(error)) from None
+
+    def _lost_connection(self, error: OSError) -> str:
+        return f"I lost the connection to Ollama at {self.base_url} ({error.strerror or error}). Please try again."
 
     def _request_json(self, method: str, path: str, timeout: float, payload: dict | None = None):
         response = self._open(method, path, payload, timeout)
@@ -161,6 +257,8 @@ class OllamaProvider(Provider):
             return json.loads(response.read().decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             raise ProviderError(f"Ollama at {self.base_url} sent a reply I couldn't understand.") from None
+        except OSError as error:
+            raise ProviderError(self._lost_connection(error)) from None
         finally:
             response.close()
 
@@ -173,3 +271,30 @@ class OllamaProvider(Provider):
         if "not found" in detail.lower() and "model" in detail.lower():
             return f"Ollama says: {detail}. Install it with 'ollama pull <model>' or pick another model."
         return f"Ollama returned HTTP {error.code}" + (f": {detail}" if detail else ".")
+
+
+# ----- Tool calls written as text -----
+# Small models (llama3.2 3B among them) sometimes write a tool call into the reply as
+# JSON, e.g. {"name": "read_file", "parameters": {"path": "notes.txt"}}, instead of
+# using Ollama's tool-call field. Such text is held back and run as the call it means.
+
+_LEADING_TAG = re.compile(r"^\s*\[[a-z]{1,15}\]\s*")
+
+
+def _may_be_json_call(text: str) -> bool:
+    rest = _LEADING_TAG.sub("", text, count=1).lstrip()
+    return rest == "" or rest.startswith("{")
+
+
+def _json_call(text: str, offered: list[dict]) -> dict | None:
+    """The tool call the text spells out, or None if it is not one of the offered tools."""
+    rest = _LEADING_TAG.sub("", text, count=1).strip()
+    try:
+        data = json.loads(rest)
+    except json.JSONDecodeError:
+        return None
+    names = {spec["function"]["name"] for spec in offered}
+    if not isinstance(data, dict) or data.get("name") not in names:
+        return None
+    args = data.get("parameters", data.get("arguments", {}))
+    return {"function": {"name": data["name"], "arguments": args if isinstance(args, dict) else {}}}

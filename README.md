@@ -12,12 +12,15 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 
 - Frameless, always-on-top window. Everything outside the CRT artwork is transparent.
 - Click Alter Ego to open a CRT-styled chat panel with message history and a text input.
-- Three AI providers, switchable from the menu: Ollama (local), Claude via Claude Code (your subscription, no key), OpenAI-compatible APIs (your key). With Ollama, Alter Ego starts the server itself, downloads a first model if there is none, and stops the server again when it quits.
+- Three AI providers, switchable from the menu: Ollama (local), Claude via Claude Code (your subscription, no key), OpenAI-compatible APIs (your key). With Ollama, Alter Ego starts the server itself, downloads a first model if there is none, and switches Ollama off again when it quits or you pick another provider, so the model stops taking memory.
+- Internet when you ask for it (Ollama and Claude): Alter Ego can look things up and read a web page when a question needs it. Switch it off with **AI** → **Allow internet**.
+- Files in one folder: ask Alter Ego to make, read or list text files and it works in `Documents\Alter Ego`, and nowhere else. Before the first change it asks *"I'm going to be editing your folder ... Is this okay?"*. **AI** → **Let me work with files** switches it off, **AI** → **Open my files folder** shows it.
+- Honest: when Alter Ego doesn't know something and can't check it, it says "I don't know" instead of guessing.
 - Replies stream in as they are generated; the window never freezes.
 - Push to talk: hold **F9** anywhere in Windows (or the **talk** button in the chat), speak, release. The words are recognised locally with Whisper and sent as a message. The key, microphone, engine and model are chosen from the **Voice** menu.
-- Hands-free (opt-in): say **"Hey Alter Ego"** and the character appears, listens for what you want, answers, and keeps listening a few seconds for a follow-up. The wake phrase is detected locally; no audio leaves the computer and none is stored.
-- Spoken replies: Alter Ego reads every reply aloud with a local, offline text-to-speech model (Kokoro). Speech starts after the first sentence, the chat text types along with the voice, the delivery follows the mood (shy replies are softer and slower, passionate ones quicker), and a light "inside a monitor" tone can be switched on or off. Pitch, speed, volume, voice and output device are chosen from the **Spoken replies** menu; an OpenAI-compatible speech API can be used instead.
-- Character voice (optional): the Kokoro speech is converted on your CPU with an RVC voice model of your choosing, so Alter Ego can speak in a specific character's voice, offline and free.
+- Hands-free (opt-in): say **"Hey Alter Ego"** and the character appears, answers "Yes?" out loud, listens for what you want, answers, then waits for the wake phrase again. Optionally you can cut a hands-free reply short just by talking (off by default). The wake phrase is detected locally; no audio leaves the computer and none is stored.
+- Spoken replies: Alter Ego reads every reply aloud with a local, offline text-to-speech model (Kokoro). Speech starts after the first sentence, the chat text types along with the voice, the delivery follows the mood (shy replies are softer and slower, passionate ones quicker), and volume and output device are chosen from the **Spoken replies** menu. Alter Ego has one voice, fixed in the program: nobody can switch it to another.
+- Character voice: the Kokoro speech is converted with Alter Ego's own RVC voice model, which ships with the project in `assets/voice/`, so Alter Ego always speaks in one voice, offline and free. It runs on an NVIDIA graphics card when there is one and on the CPU otherwise, decided per computer.
 - Persistent memory: the conversation is saved in a local SQLite file and restored on the next start, with day dividers in the chat and a "welcome back" line after a long pause. Switch it off or wipe it from the **Memory** menu.
 - With Claude via Claude Code, the Claude session is resumed after a restart too, so Claude remembers as much as the chat panel shows.
 - The AI chooses an expression for each reply; the character's face follows (thinking → reply expression → back to idle).
@@ -42,7 +45,7 @@ An open-source desktop companion built with Python and PySide6, inspired by the 
 - A working desktop session; on Linux, a system tray (for example Waybar's tray module) is useful but not required
 - For push to talk: a microphone. `requirements.txt` includes [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for local speech recognition; the first use downloads the speech model (about 150 MB for `base`). Everything else works without it.
 - For spoken replies: speakers or headphones. `requirements.txt` includes [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) for local text-to-speech; the voice files (about 340 MB) are downloaded from the menu when you ask for them, never silently. Everything else works without it.
-- For the character voice (optional): `requirements-character-voice.txt` adds [infer-rvc-python](https://github.com/R3gm/infer_rvc_python) and CPU PyTorch (about 250 MB), plus two base models downloaded from the menu (535 MB), plus a voice model of the character that you obtain yourself. See [Character voice](#character-voice).
+- For the character voice (optional): `requirements-character-voice.txt` adds [infer-rvc-python](https://github.com/R3gm/infer_rvc_python) and PyTorch (CPU build about 250 MB; the NVIDIA build about 3 GB, much faster), plus two base models downloaded from the menu (535 MB), The voice model itself comes with the project. See [One voice](#one-voice).
 
 ## Run from source
 
@@ -76,7 +79,18 @@ For the character voice, add (on any platform, inside the activated environment)
 
 ```bash
 pip install -r requirements-character-voice.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+pip install --no-deps infer-rvc-python==1.3.1
 ```
+
+On a computer with an NVIDIA graphics card, replace PyTorch with its CUDA build afterwards; the voice then runs on the card, about three times faster (measured on an RTX 5070: a sentence in a quarter of its own length instead of four fifths):
+
+```bash
+pip install torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+Nothing else changes: Alter Ego checks at start whether PyTorch can use a card and otherwise uses the CPU, so the same project runs on a desktop with a big GPU and on a small laptop. The console says which (`character voice on the GPU (...)` or `on the CPU, 6 threads`). Set the environment variable `ALTER_EGO_DEVICE=cpu` to keep the voice off a weak or busy card. If the card cannot load the voice, Alter Ego falls back to the CPU by itself.
+
+The second line of the first block is separate on purpose: the converter pins an older `pyworld` that has no ready-made Windows build for Python 3.12, so the requirements file installs a newer one and the converter is added without its pins.
 
 Linux notes: audio goes through PipeWire/PulseAudio via Qt, nothing extra to install. The global push-to-talk key is Windows-only for now; on Linux hold the **talk** button in the chat panel, or use hands-free mode. If your compositor has no system tray, Alter Ego still runs: right-click the character for the menu.
 
@@ -92,7 +106,7 @@ Uses the Claude login you already have in [Claude Code](https://claude.com/claud
 2. In Alter Ego: **AI** → **Provider** → **Claude (via Claude Code login)**, then **AI** → **Test connection**.
 3. Optional: **AI** → **Model** to pick `opus`, `sonnet` or `haiku` (`default` = whatever Claude Code uses).
 
-How it works: for each message Alter Ego runs `claude -p` in the background with the personality as system prompt, **all tools disabled** (it cannot read your files or run commands) and your coding hooks/plugins switched off. Claude Code keeps the conversation context in its own session; clearing the chat starts a new one. Expect 3–8 seconds before the first word, since a new process starts each time. Set `"effort": "low"` under `claude_code` in the settings file for faster answers.
+How it works: for each message Alter Ego runs `claude -p` in the background with the personality as system prompt, Claude Code's coding tools **disabled** (it cannot run commands or reach your files outside the Alter Ego folder), and your coding hooks, plugins and MCP servers switched off. Only what you allow under **AI** is offered: Claude's own web search and page reading for **Allow internet**, and Alter Ego's file tools for **Let me work with files** (see [Internet and files](#internet-and-files)). With a tool in use a reply may take a few seconds longer. Claude Code keeps the conversation context in its own session; clearing the chat starts a new one. Expect 3–8 seconds before the first word, since a new process starts each time. Set `"effort": "low"` under `claude_code` in the settings file for faster answers.
 
 > **Terms:** this drives the official Claude Code command on your own computer with your own account. Whether a Claude subscription may be used by a third-party application like this one is governed by Anthropic's usage policies, which can change. Check them before relying on it, and use the API-key route if in doubt.
 
@@ -121,10 +135,20 @@ Your conversation text goes to that service; you pay for usage with your own key
 2. Start Alter Ego and choose **AI** → **Provider** → **Ollama (local)** (it is the default). Alter Ego looks after the rest:
    - If nothing is listening at the local address, it starts `ollama serve` itself and waits for it ("Starting Ollama..." shows in the chat). Choosing Ollama in the menu, or starting Alter Ego with Ollama chosen, does this at once, so the first reply is not delayed.
    - The first time you talk to it with no model installed, it downloads `llama3.2` (about 2 GB, once) and shows the progress in the chat before answering.
-   - When you quit Alter Ego it stops the Ollama server again, but only if Alter Ego was the one who started it. An Ollama you started yourself (the desktop app, a terminal) is left alone.
+   - When you quit Alter Ego, or switch to another provider, Ollama is switched off so its model no longer takes memory. On Windows that includes the Ollama tray app and the model runners, even if you started them yourself; if Alter Ego crashes, Windows still stops the server it started. On Linux only a server Alter Ego started is stopped (a system service needs administrator rights).
+   - A server Alter Ego starts keeps one model in memory and answers one reply at a time, which keeps memory use low.
+   - The model is loaded as soon as Ollama is up ("Waking up my brain..." shows briefly) and stays loaded for 30 minutes after the last reply, so replies do not wait for it to load. Alter Ego talks to a local Ollama at `127.0.0.1` even when the setting says `localhost`: on Windows `localhost` cost about two seconds per request. Measured with `llama3.2` on an RTX 5070: the first word about 0.1 s after you press Enter.
 3. Optional: **AI** → **Model** to pick another installed model (the first one is used by default), and **AI** → **Test connection** to have Alter Ego confirm everything works. More models: `ollama pull <name>` in a terminal, or set `default_model` in the settings file before the first run.
 
 If Ollama is not installed, Alter Ego says so in the chat with the download link; it cannot install Ollama itself. If Ollama is on another machine or port, change `base_url` under `ollama` in the settings file: a remote server is never started or stopped by Alter Ego. `auto_start` and `auto_pull` switch the two behaviours off, and `command` can point at the Ollama executable if it is not on the PATH.
+
+### Internet and files
+
+Both work with Ollama and with Claude via Claude Code, and both are on by default. Alter Ego uses them only when a question needs them, and the chat shows what it is doing ("Searching the web...", "Writing notes.txt...").
+
+- **Internet** (`tools.internet`): with Claude, Claude Code's own web search and page reading. With Ollama, Alter Ego searches Wikipedia and DuckDuckGo's instant answers (free, no key) and can read any web page you or the model name. That covers facts, people, places and definitions well; the latest news may not be there. For results from the whole web, set `search_url` to a [SearXNG](https://docs.searxng.org/) server (your own, or one you trust) with its JSON output enabled.
+- **Files** (`tools.files`): list, read, write and make folders in one folder only, `Documents\Alter Ego` unless `folder` says otherwise. Paths that point anywhere else are refused. Before the first change Alter Ego asks *"I'm going to be editing your folder ... Is this okay?"*. Yes holds until you quit; after a no, it asks again the next time you want a file made. Alter Ego cannot run programs or commands.
+- Small local models are not always good with tools. `llama3.2` handles both; if a model can't use tools at all, Alter Ego just chats with it. Tool calls the model writes out as text are recognised and run as well.
 
 ### The settings file
 
@@ -137,6 +161,7 @@ If Ollama is not installed, Alter Ego says so in the chat with the download link
                    "auto_start": true, "auto_pull": true, "default_model": "llama3.2" },
   "claude_code": { "command": "claude", "model": "", "effort": "" },
   "openai":      { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "" },
+  "tools":       { "internet": true, "files": true, "folder": "", "search_url": "" },
   "memory":      { "enabled": true, "context_messages": 30 },
   "speech": {
     "enabled": true,
@@ -152,32 +177,18 @@ If Ollama is not installed, Alter Ego says so in the chat with the download link
     "wake_model": "tiny",
     "wake_sensitivity": "normal",
     "awake_seconds": 3,
-    "follow_up_seconds": 3
+    "interrupt_by_voice": false
   },
   "voice": {
     "enabled": true,
-    "synthesizer": "kokoro",
-    "kokoro_voice": "alter_ego",
-    "kokoro_model": "standard",
-    "rvc_model": "",
-    "rvc_index": "",
-    "rvc_pitch": 0,
-    "rvc_index_rate": 0.5,
-    "rvc_f0_method": "rmvpe+",
-    "rvc_threads": 0,
-    "openai_model": "tts-1",
-    "openai_voice": "nova",
-    "pitch": 2,
-    "speed": 1.0,
     "volume": 0.8,
-    "crt_effect": true,
     "speaker": "",
     "models_dir": ""
   }
 }
 ```
 
-`provider` is one of `offline`, `ollama`, `claude_code`, `openai`. An empty `model` means "the first one available". The `memory` keys are explained under [Memory](#memory), the `speech` keys under [Push to talk](#push-to-talk) and the `voice` keys under [Spoken replies](#spoken-replies).
+`provider` is one of `offline`, `ollama`, `claude_code`, `openai`. An empty `model` means "the first one available". The `tools` keys are explained under [Internet and files](#internet-and-files), the `memory` keys are explained under [Memory](#memory), the `speech` keys under [Push to talk](#push-to-talk) and the `voice` keys under [Spoken replies](#spoken-replies).
 
 ## Controls
 
@@ -190,14 +201,17 @@ If Ollama is not installed, Alter Ego says so in the chat with the download link
 | Change the talk key, microphone or speech engine | Right-click Alter Ego → **Voice** |
 | Talk without touching anything | **Voice** → **Hands-free**, then say "Hey Alter Ego" followed by your request |
 | Hear the replies | On by default. Right-click Alter Ego → **Spoken replies** → **Download my voice** the first time; **Test my voice** plays a line |
-| Interrupt Alter Ego mid-sentence | Hold the talk key or the **talk** button (it goes quiet and listens), or **clear** the chat |
-| Change the voice, pitch, speed, volume or speakers | Right-click Alter Ego → **Spoken replies** |
+| Give Alter Ego its character voice | Install the character-voice packages, then **Spoken replies** → **Download my voice** and **Prepare my voice** |
+| Interrupt Alter Ego mid-sentence | Hold the talk key or the **talk** button (it goes quiet and listens), or **clear** the chat. Answering a hands-free request, with **Voice** → **Interrupt by talking** on: just start talking |
+| Change the volume or speakers | Right-click Alter Ego → **Spoken replies** (the voice itself is fixed; see [One voice](#one-voice)) |
 | Clear the conversation | **clear** in the chat panel header (the old conversation stays in memory on disk, it is just no longer shown) |
 | Turn memory on or off | Right-click Alter Ego → **Memory** → **Remember conversations** |
 | Wipe all memory | **Memory** → **Forget everything...** (asks for confirmation) |
 | Hide the chat | **×** in the header, or press **Esc** |
 | Move the chat | Drag it by its header. It follows Alter Ego until you move it yourself. |
 | Choose AI provider / model | Right-click Alter Ego → **AI**, or tray menu → **AI** |
+| Let Alter Ego go online, or not | **AI** → **Allow internet** |
+| Let Alter Ego make and read files, or not | **AI** → **Let me work with files**; **AI** → **Open my files folder** shows them |
 | Check the AI connection | **AI** → **Test connection** (Alter Ego answers in the chat; with Ollama this also starts the server and fetches a first model if needed) |
 | Change size | Right-click Alter Ego → **Size** |
 | Hide / show | Left-click the tray icon, or use either menu (with a burst of static) |
@@ -223,8 +237,9 @@ How it works, all on your computer:
 
 1. A small loudness detector splits the microphone stream into utterances (something said between two pauses). Silence and background noise are discarded immediately; nothing is recorded to disk.
 2. Each utterance is transcribed with the small, fast `tiny` Whisper model (`wake_model`), told to expect the phrase and to use your `language` (English if unset), and compared with the wake phrase. The match is forgiving: "Altar Ego", "Ultra Ego", "AlterEgo" and "um, hey Alter Ego" all count. Nothing else that is said while waiting is kept or shown.
-3. On a match Alter Ego appears (with its static burst, if it was hidden), opens the chat and shows "I'm listening...". What you say next is recognised with your main engine and sent. If you say nothing for `awake_seconds` (3 by default) it stops listening and waits for the wake phrase again; the countdown only runs while you are silent, so a long sentence is never cut short. "Hey Alter Ego, what time is it" in one breath works too.
-4. After the reply, it keeps listening for more without the wake phrase until you have been silent for `follow_up_seconds` (3 by default). Set it to `0` to require the wake phrase every time.
+3. On a match Alter Ego appears (with its static burst, if it was hidden), opens the chat, answers out loud with a short "Yes?" (or "I'm here!", from `wake_replies` in the personality file; with spoken replies off only the chat shows "I'm listening...") and listens. The answer is prepared when the voice loads, so it comes at once, and the listening window starts after it. What you say next is recognised with your main engine and sent. If you say nothing for `awake_seconds` (3 by default) it stops listening and waits for the wake phrase again; the countdown only runs while you are silent, so a long sentence is never cut short. "Hey Alter Ego, what time is it" in one breath works too.
+4. After the reply it stops listening and waits for the wake phrase again: every new request starts with "Hey Alter Ego".
+5. **Interrupt by talking** (**Voice** → **Interrupt by talking (hands-free)**, off by default): while Alter Ego answers something you asked hands-free, just start talking and it stops at once and listens; what you say is the next request. It only applies to replies to a hands-free request, not to typed or push-to-talk ones (hold the talk key to interrupt those). The microphone stays open while it talks, so use headphones: with speakers it may hear its own voice and cut itself off.
 
 Notes:
 
@@ -249,36 +264,36 @@ Alter Ego reads its replies aloud. The voice is made on your own computer by [Ko
 How it works:
 
 1. The `Speaker` watches the conversation like the chat panel does. As a reply streams in, every complete sentence is handed to a worker thread that runs the model; finished clips are played in order through the speakers (Qt Multimedia, so nothing extra to install). A reply that starts with "Oh! H-hello." is already being said while the rest is still being written.
-2. The chat's typewriter follows the voice: each sentence is typed out over the time its audio takes, and the reply counts as finished (face relaxes, hands-free follow-up window opens) only when the last clip has been played.
+2. The chat's typewriter follows the voice: each sentence is typed out over the time its audio takes, and the reply counts as finished (the face relaxes) only when the last clip has been played.
 3. The delivery follows the expression the AI chose for the reply: `[shy]` and `[sad]` replies are spoken a little slower, `[passionate]` and `[surprised]` ones a little quicker.
 4. While Alter Ego is talking the hands-free microphone is paused, so it never answers itself. Holding the push-to-talk key interrupts the speech.
+
+### One voice
+
+Alter Ego has exactly one voice, and it is part of the program, not a setting. There is no menu, setting or `config.json` key that picks another voice, engine, pitch or speed; old keys such as `kokoro_voice`, `rvc_model` or `pitch` left in a settings file are ignored. What you can change is whether it speaks, how loud, and through which speakers.
+
+That voice is the character's own: Kokoro says the words, and a second model, RVC (Retrieval-based Voice Conversion), changes the timbre to that of Alter Ego's own voice model, trained for this project, so the delivery is Kokoro's and the voice is Alter Ego's. Everything runs on your CPU; nothing is sent anywhere and nothing costs anything. If the voice file is missing, the soft Kokoro blend (Heart, Bella and a little of the whispery Nicole, raised 2 semitones and with a light "inside a monitor" tone) stands in, so Alter Ego is never mute.
+
+To give Alter Ego its voice you need:
+
+1. The package: the two `pip install` lines shown under [Run from source](#run-from-source). It needs Python 3.10 to 3.13.
+2. The two base models every RVC voice shares (the RMVPE pitch tracker and the HuBERT speech encoder, 535 MB): **Spoken replies** → **Download my voice**. They go into `data/voices/rvc/`.
+3. The voice model, `assets/voice/alter_ego.pth` and `alter_ego.index` (about 87 MB). It is part of the project and stored with [Git LFS](https://git-lfs.com), so install Git LFS before cloning, or run `git lfs pull` afterwards. Without it, Git leaves a small placeholder file and Alter Ego uses the stand-in voice until you pull. No other model is used, and there is no folder to drop one into.
+
+The character voice is played exactly as the model makes it: no pitch lift and no monitor tone. Its tuning is fixed in `src/alter_ego/voice/rvc_local.py` (`DEFAULT_PITCH` +7 semitones, which lifts the Kokoro source to the character's own speaking pitch; `DEFAULT_INDEX_RATE` 0.75; pitch tracker `rmvpe+`); the conversion uses all CPU threads but two.
 
 The **Spoken replies** menu:
 
 - **Speak replies out loud:** on/off (`enabled`).
-- **Engine:** local Kokoro (default, offline), or **OpenAI-compatible API**: `POST /audio/speech` at the `base_url` from the `openai` section with that key (`openai_model`, `openai_voice`; OpenAI's `tts-1` with `nova`, or a local server such as speaches, LocalAI or Kokoro-FastAPI). The text of each reply leaves the computer in that case.
-- **Voice:** *Alter Ego (soft blend)* is the default, a mix of three Kokoro voices (Heart, Bella and a little of the whispery Nicole) chosen for a soft, gentle, youthful sound in the spirit of the character the project is inspired by. Any single Kokoro voice can be picked instead, including British, Japanese, Spanish, French, Italian, Portuguese, Chinese and Hindi ones (`kokoro_voice`; the language follows the voice). The blend weights live in `PRESETS` in `src/alter_ego/voice/kokoro_local.py` if you want to tune your own.
-- **Voice model:** *Standard* (310 MB, full quality) or *Small* (88 MB, 8-bit, a little faster and slightly rougher) (`kokoro_model`).
-- **Pitch:** Kokoro has no pitch control, so Alter Ego produces each clip a little slower and plays it a little faster, which raises the voice without changing the tempo (and raises its resonances, which is what makes a voice sound younger). The default is 2 semitones up (`pitch`, from -6 to 8).
-- **Speed**, **Volume**, **Speakers:** tempo (`speed`, 0.6 to 1.6), loudness (`volume`, 0 to 1) and the output device (`speaker`, a device name or empty for the system default).
-- **Computer-voice effect:** a light "speaking from inside a monitor" tone: no deep lows, softened highs, a faint tiny-speaker ring and a touch of saturation, mixed in gently so the words stay clear (`crt_effect`). Switch it off for the plain voice.
-- **Prepare my voice** loads the model ahead of time (the first reply after a start otherwise waits about two seconds); **Test my voice** says a line.
+- **My voice:** which voice is speaking: Alter Ego, or the stand-in if the voice file is missing.
+- **Volume**, **Speakers:** loudness (`volume`, 0 to 1) and the output device (`speaker`, a device name or empty for the system default).
+- **Download my voice** fetches whatever is missing; **Prepare my voice** loads the voice ahead of time; **Test my voice** says a line.
 
-### Character voice
+Speed: the voice is loaded in the background when Alter Ego starts (once it is downloaded), so the first reply does not wait for it. Measured for Kokoro plus the conversion together: about a quarter of the sentence's length on an NVIDIA RTX 5070, about four fifths on a desktop CPU (6 threads), more on a small laptop. With sentence-by-sentence playback the first sentence is heard one to a few seconds after the reply starts, and the chat text types along with the voice. Loaded, the voice takes about 2.7 GB of memory (3.1 GB on the GPU, with the CUDA libraries); with spoken replies off none of it is loaded.
 
-The blend above is *in the spirit of* the character. To make Alter Ego sound like a specific character, switch **Engine** to **Local Kokoro + character voice**. Kokoro still says the words; a second model, RVC (Retrieval-based Voice Conversion), then changes the timbre to that of a voice model trained on the character, so the delivery stays Kokoro's and the voice becomes the character's. Everything runs on your CPU; nothing is sent anywhere and nothing costs anything.
+The stammer Alter Ego writes ("I-I think", "th-thank you") is part of the character in the chat, but it is spoken as the plain word, because read aloud it sounded like a stutter of letters.
 
-You need three things:
-
-1. The package: `pip install -r requirements-character-voice.txt` with the extra index flags shown under [Run from source](#run-from-source). It needs Python 3.10 to 3.13.
-2. The two base models every RVC voice shares (the RMVPE pitch tracker and the HuBERT speech encoder, 535 MB): **Spoken replies** → **Download my voice**. They go into `data/voices/rvc/`.
-3. A voice model of the character: a `.pth` file, usually with a `.index` file next to it, trained by someone on the character's lines. Alter Ego ships none and links to none; people share them on sites such as Hugging Face. Choose it with **Spoken replies** → **Character voice model...**; the `.index` in the same folder is picked up automatically (or set `rvc_index`). Whether using a model of a real voice actor's voice is appropriate is your call; this is a private, non-commercial fan project, and the model stays on your computer.
-
-Settings: **Character voice pitch** shifts the converted voice in semitones (`rvc_pitch`; a female Kokoro voice converted to a high, young voice usually wants 0 to +4); **Character voice quality** picks the pitch tracker (`rvc_f0_method`: `rmvpe+` is best, `pm` is fastest and rougher); `rvc_index_rate` (0 to 1) sets how strongly the model's index pulls the timbre toward its training voice; `rvc_threads` limits the CPU threads (0 = all but two). The Kokoro **Pitch** setting does not apply to the character voice. **Computer-voice effect** still does.
-
-Speed: on a recent laptop CPU a sentence converts in about one and a half times its own length, on top of Kokoro's half. With sentence-by-sentence playback the first short sentence is heard a few seconds after the text starts, and later sentences follow with small gaps on long replies. Keep replies short (the personality already asks for that), or choose `pm` for speed. The first conversion after a start loads the models and takes 10 to 30 seconds; **Prepare my voice** does that ahead of time.
-
-If the package is missing, the files are not downloaded, the speakers cannot be opened or the model fails, Alter Ego says so once in the chat and stays quiet until the settings change; the text replies keep working as before.
+If the package is missing, the files are not downloaded, the speakers cannot be opened or the model fails, Alter Ego says so once in the chat and stays quiet until the settings change or you choose **Prepare my voice**; the text replies keep working as before.
 
 ## Memory
 
@@ -301,8 +316,11 @@ Alter Ego's character is defined in `assets/personality/alter_ego.json`:
 | `name` | Shown in the chat panel |
 | `greeting` | The first thing Alter Ego says when the chat opens |
 | `return_greeting` | What Alter Ego says when the chat reopens after more than an hour with earlier messages remembered |
+| `wake_replies` | What Alter Ego says out loud right after "Hey Alter Ego" (one at random), so you know it is listening |
 | `traits`, `description` | Reference for contributors |
-| `system_prompt` | Instructions sent to the AI model before every conversation. Written as a list of lines for readability. |
+| `system_prompt` | Instructions sent to the AI model before every conversation. Written as a list of lines for readability. It is kept short on purpose (about 150 words), because it is sent with every reply. |
+
+The personality follows Chihiro Fujisaki, who made Alter Ego in the story: kind, soft-spoken and timid, quick to apologise, secretly determined to become stronger, flustered by compliments, and confident and precise about programming. It also tells the model to say "I don't know" rather than guess, and to report only what its tools really returned.
 
 Edit the file and restart the app. If the file is missing or broken, a small built-in default personality is used and a warning is printed.
 
@@ -347,16 +365,18 @@ AlterEgo-Companion/
 ├── .claude/                  # Claude Code instructions (they point at AI/)
 ├── assets/
 │   ├── animations/           # Expression PNGs
-│   └── personality/          # alter_ego.json
+│   ├── personality/          # alter_ego.json
+│   └── voice/                # Alter Ego's one voice: alter_ego.pth and .index (Git LFS)
 ├── data/                     # Created at runtime, gitignored: config.json, memory.db
 ├── src/
 │   └── alter_ego/
 │       ├── __init__.py       # Package version
 │       ├── app.py            # Starts the app, wires everything together, tray icon
-│       ├── ai_menu.py        # "AI" submenu: provider, model, test connection
+│       ├── ai_menu.py        # "AI" submenu: provider, model, internet and files on/off, test connection
+│       ├── tool_approval.py  # Asks the user before the AI first changes a file (a Yes/No dialog)
 │       ├── memory_menu.py    # "Memory" submenu: on/off, what is stored, forget everything
 │       ├── voice_menu.py     # "Voice" submenu: push to talk on/off, key, microphone, engine
-│       ├── speak_menu.py     # "Spoken replies" submenu: on/off, engine, voice, pitch, speed, volume, speakers
+│       ├── speak_menu.py     # "Spoken replies" submenu: on/off, volume, speakers
 │       ├── character.py      # Desktop window: drawing, effects, dragging, menus
 │       ├── chat.py           # Chat panel: history, day dividers, input, talk button, typewriter (paced to the voice)
 │       ├── expressions.py    # Expression list + ExpressionManager
@@ -365,12 +385,14 @@ AlterEgo-Companion/
 │       │   ├── personality.py    # Loads the personality JSON
 │       │   ├── conversation.py   # Message + Conversation history
 │       │   ├── memory.py         # MemoryStore: saves the Conversation to SQLite, restores it
+│       │   ├── tools.py          # ToolBox: web search, reading pages, files in one folder (what the AI may do)
 │       │   └── assistant.py      # Assistant (worker thread, expression tags), responders
 │       ├── providers/        # AI backends (all standard library, no SDKs)
 │       │   ├── base.py           # Provider interface + ProviderError
-│       │   ├── ollama.py         # Ollama over HTTP (chat, model list, model download with progress)
-│       │   ├── ollama_server.py  # Starts `ollama serve` when nothing answers locally, stops it on quit
-│       │   ├── claude_code.py    # Claude via the `claude -p` command (your login)
+│       │   ├── ollama.py         # Ollama over HTTP (chat with tool calls, model list, model download with progress)
+│       │   ├── ollama_server.py  # Starts `ollama serve` when nothing answers locally, switches Ollama off on quit
+│       │   ├── claude_code.py    # Claude via the `claude -p` command (your login), web tools on request
+│       │   ├── tools_mcp.py      # Alter Ego's file tools for Claude Code (a tiny MCP server) + the approval bridge
 │       │   └── openai_compat.py  # OpenAI-style /chat/completions (SSE streaming)
 │       ├── speech/           # Voice input
 │       │   ├── audio.py          # AudioClip: raw microphone PCM -> 16 kHz mono samples, WAV export
@@ -388,8 +410,8 @@ AlterEgo-Companion/
 │       │   ├── text.py           # Cuts a streaming reply into sentences
 │       │   ├── effects.py        # Pitch lift (resampling), the CRT tone, PCM conversion
 │       │   ├── kokoro_local.py   # kokoro-onnx, offline; voice presets; downloads the model files
-│       │   ├── rvc_local.py      # Character voice: Kokoro speech converted with an RVC model (infer-rvc-python)
-│       │   ├── openai_tts.py     # /audio/speech on an OpenAI-compatible API
+│       │   ├── rvc_local.py      # The character voice: Kokoro speech converted with the RVC model in assets/voice/
+│       │   ├── device.py         # GPU or CPU for the voice, decided per computer (ALTER_EGO_DEVICE overrides)
 │       │   ├── player.py         # SpeechPlayer (Qt Multimedia audio sink)
 │       │   └── speaker.py        # Speaker: conversation -> sentences -> worker thread -> player, in order
 │       └── settings/
@@ -399,11 +421,13 @@ AlterEgo-Companion/
 │   ├── test_memory.py        # Memory store, context trimming, welcome-back, session file
 │   ├── test_speech.py        # Audio conversion, key names, API engine, push-to-talk states
 │   ├── test_handsfree.py     # Utterance detector, wake-phrase matching, hands-free states
-│   ├── test_voice.py         # Sentence splitting, effects, both speech engines, Speaker states
+│   ├── test_voice.py         # Sentence splitting, effects, Kokoro, the character voice, the fixed voice choice, Speaker states
 │   ├── test_providers.py     # Providers against fake servers, a fake `claude` and a fake `ollama`
+│   ├── test_tools.py         # Web and file tools, tool calls in Ollama and Claude, approval, stopping Ollama
+│   ├── test_wake_and_speed.py  # The "Yes?" after the wake phrase, voice preload, GPU/CPU choice, unspoken stammer
 │   ├── fake_claude.py        # Stand-in for the Claude Code command
 │   └── fake_ollama.py        # Stand-in for `ollama serve`
-├── main.py                   # Entry point: python main.py
+├── main.py                   # Entry point: python main.py (with --tool-server: the file-tool server for Claude Code)
 ├── requirements.txt
 ├── requirements-character-voice.txt  # Optional: RVC voice conversion (PyTorch, Python 3.10 to 3.13)
 ├── LICENSE
@@ -414,7 +438,7 @@ How the pieces talk to each other (all through Qt signals, so modules stay indep
 
 1. The chat panel calls `Assistant.send(text)`.
 2. The `Assistant` adds the user's message to the `Conversation`, switches to `THINKING`, and starts a worker thread that first lets the `Responder` prepare (with Ollama: start the server, download a first model, progress shown in the chat) and then asks it for a reply. Network waits happen on that thread, so the desktop stays responsive. **Test connection** and the warm-up after choosing a provider run on the same kind of worker.
-3. `ProviderResponder` builds the prompt (personality system prompt + tag instruction + history) and streams text from the `Provider` (`OllamaProvider`). The offline responder plugs into the same slot.
+3. `ProviderResponder` builds the prompt (personality system prompt + tag instruction + history) and streams text from the `Provider` (`OllamaProvider`). If the model asks for a tool (a web search, writing a file), the provider runs it from the `ToolBox` (`core/tools.py`), reports it in the chat ("Searching the web..."), and lets the model continue with the result. The offline responder plugs into the same slot.
 4. As pieces arrive, the `Assistant` strips the leading expression tag, adds the reply to the `Conversation` and keeps updating its text (`message_updated`).
 5. The chat panel types the growing text out; `CharacterReactions` sets the face as soon as the tag is known; when typing finishes it waits a few seconds and returns the face to Happy.
 6. The `MemoryStore` listens to the same `Conversation` signals: it inserts each new message, writes a streamed reply once when it is complete, and marks the conversation as ended when the chat is cleared. At start-up it loads the last conversation into the `Conversation` before the windows are connected.
@@ -432,7 +456,7 @@ If you work on the project with an AI coding assistant (or want the house rules 
 python -m unittest discover -s tests -v
 ```
 
-The tests cover the non-visual parts: personality and config loading, conversation history, expression-tag parsing and reply clean-up, the assistant's streaming send/reply cycle (including failures and cancellation), the memory store (saving, restoring, clearing, forgetting), context trimming, audio conversion, the utterance detector, wake-phrase matching, the push-to-talk and hands-free state machines with a fake microphone and engines, the API speech engine against a fake server, sentence splitting, the voice effects, the API text-to-speech engine against a fake server, the Speaker state machine with a fake engine and a fake player, and all three providers against fakes (a fake Ollama server, a fake OpenAI server and a fake `claude` command). They need neither Ollama, Claude Code, an API key, a microphone, speakers, the Whisper package nor the Kokoro files, and they write only to temporary folders. On a machine without a display, run them with `QT_QPA_PLATFORM=offscreen`.
+The tests cover the non-visual parts: personality and config loading, conversation history, expression-tag parsing and reply clean-up, the assistant's streaming send/reply cycle (including failures and cancellation), the memory store (saving, restoring, clearing, forgetting), context trimming, audio conversion, the utterance detector, wake-phrase matching, the push-to-talk and hands-free state machines with a fake microphone and engines, the API speech engine against a fake server, sentence splitting, the voice effects, the character voice with a fake converter, how the one fixed voice is chosen, the Speaker state machine with a fake engine and a fake player, all three providers against fakes (a fake Ollama server, a fake OpenAI server and a fake `claude` command), and the web and file tools (fake web pages, a temporary folder, tool calls through the fake Ollama and the file-tool server, the approval question, stopping Ollama). They need neither Ollama, Claude Code, an API key, a microphone, speakers, the Whisper package nor the Kokoro files, and they write only to temporary folders. On a machine without a display, run them with `QT_QPA_PLATFORM=offscreen`.
 
 ## Build a Windows executable
 
@@ -455,7 +479,7 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 - [x] v0.3.1: Claude via Claude Code login, OpenAI-compatible APIs
 - [x] v0.4.0: Persistent memory (conversations survive restarts, Memory menu)
 - [x] v0.5.0: Voice input: push to talk and hands-free "Hey Alter Ego", with local speech recognition (Whisper) or an API
-- [x] v0.6.0: Spoken replies: local text-to-speech (Kokoro) with a soft, youthful voice, sentence-by-sentence streaming, text paced to the voice, or an API
+- [x] v0.6.0: Spoken replies: one fixed voice, the character's own (Kokoro converted with an RVC model, all local), sentence-by-sentence streaming, text paced to the voice
 - [ ] v0.7.0: Scheduled updates and notifications
 - [ ] Later: long-term recall of older conversations
 
@@ -463,14 +487,16 @@ The executable will be in `dist/AlterEgo/AlterEgo.exe`. The app finds the bundle
 
 - **Microphone:** by default opened only while the push-to-talk key or the talk button is held, and closed the moment you let go. No audio files are written to disk. With the default local engine the recording never leaves your computer; with the API engine it is uploaded to the service at `base_url`. Switch voice input off entirely under **Voice** → **Push to talk**.
   - **Hands-free** (off by default) keeps the microphone open while the app runs. Audio is analysed in memory and discarded; only after the wake phrase is heard is the next thing you say treated as a message. The wake-phrase check is always local. See [Hands-free](#hands-free).
-- **Speakers:** with the default local engine, the voice is produced on your computer and nothing is sent anywhere. With the API engine, the text of every reply (not your messages) is sent to the service at `base_url`. The one-time voice download comes from the kokoro-onnx GitHub release and happens only when you choose it in the menu. The character voice is also fully local; its two base models come from Hugging Face, again only when you choose **Download my voice**, and the character's own model is a file you placed on the computer yourself.
+- **Speakers:** with the default local engine, the voice is produced on your computer and nothing is sent anywhere. The one-time voice download comes from the kokoro-onnx GitHub release and happens only when you choose it in the menu. The character voice is also fully local; its two base models come from Hugging Face, again only when you choose **Download my voice**, and the voice model itself ships with the project in `assets/voice/`.
 - **Network:** depends on the provider you choose, and nothing is sent anywhere else.
   - *Offline:* no network at all.
   - *Ollama:* your messages, the conversation history and the personality prompt go to the Ollama server in your settings (`http://localhost:11434` by default, your own computer). The one-time model download comes from ollama.com through the Ollama server; nothing of yours is sent with it.
+  - *Internet tool* (on by default, **AI** → **Allow internet**): with Ollama, when the model decides to search, the search words go to Wikipedia (`en.wikipedia.org`) and DuckDuckGo (`api.duckduckgo.com`), or to your SearXNG server if `search_url` is set, and pages it reads are fetched from their sites. Your conversation is not sent, only the search words and addresses. With Claude, Claude Code's own web tools are used under your Anthropic account. Switch it off and nothing goes online except the provider itself.
   - *Claude via Claude Code:* the same text is sent to Anthropic by the Claude Code command under your own account, subject to Anthropic's privacy terms. Claude Code also stores the session transcript locally under its own folder (`~/.claude/`).
   - *OpenAI-compatible:* the same text is sent to the service at `base_url` with your API key, subject to that service's terms.
 - **Storage:** Alter Ego writes two files, both in `data/` (gitignored) and both only on your computer:
   - `config.json`: your settings and, if you use one, your API key. Keep it private.
   - `memory.db`: your conversations, as plain SQLite. Switch saving off with **Memory** → **Remember conversations**, or delete everything with **Memory** → **Forget everything...**. With memory off, conversations are kept in RAM only and are gone when the app quits.
   - With Claude via Claude Code, `data/claude_code/session` holds the id of the Claude Code session being resumed; Claude Code itself keeps the transcript under `~/.claude/`.
-  - `voices/` holds the downloaded Kokoro model and voice files (no personal data). Delete the folder to free the space.
+  - With **Let me work with files** on, the AI reads and writes files in `Documents\Alter Ego` (or `tools.folder`), only after you said yes, and nowhere else. `data/claude_code/mcp.json` tells Claude Code how to start Alter Ego's file-tool server; it holds a one-time code that changes every run.
+  - `voices/` holds the downloaded Kokoro files, and the RVC base models (`rvc/`) (no personal data). Delete the folder to free the space.

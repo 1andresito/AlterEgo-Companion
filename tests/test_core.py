@@ -77,7 +77,7 @@ class FakeResponder:
         if self.fail_with and self.fail_with.startswith("prepare:"):
             raise ProviderError(self.fail_with[len("prepare:"):])
 
-    def stream_reply(self, text, personality, history, cancelled):
+    def stream_reply(self, text, personality, history, cancelled, progress=None):
         self.calls.append((text, tuple(history)))
         if self.fail_with:
             raise ProviderError(self.fail_with)
@@ -100,7 +100,7 @@ class FakeProvider(Provider):
     def list_models(self):
         return list(self.models)
 
-    def stream_reply(self, messages, model, cancelled):
+    def stream_reply(self, messages, model, cancelled, progress=None):
         self.last_messages = messages
         self.last_model = model
         yield "[happy] "
@@ -356,7 +356,7 @@ class AssistantTests(unittest.TestCase):
         conversation = Conversation()
 
         class SlowResponder(FakeResponder):
-            def stream_reply(self, text, personality, history, cancelled):
+            def stream_reply(self, text, personality, history, cancelled, progress=None):
                 yield "[talk] one "
                 for _ in range(200):
                     if cancelled():

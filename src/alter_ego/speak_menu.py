@@ -1,31 +1,26 @@
-"""The "Spoken replies" submenu: voice on/off, engine, voice, pitch, speed, volume, speakers.
+"""The "Spoken replies" submenu: voice on/off, volume and speakers.
 
 Shared by the character's right-click menu and the tray menu, like the AI,
-Voice and Memory menus. Every change is saved at once and applied through
-`apply_settings`, which rebuilds the engine and restyles the voice.
+Voice and Memory menus. Alter Ego has a single voice, so nothing here picks
+a voice, engine, pitch or speed; the menu only says which voice is in use.
+Every change is saved at once and applied through
+`apply_settings`.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Callable
 
 from PySide6.QtGui import QActionGroup
-from PySide6.QtWidgets import QFileDialog, QMenu
+from PySide6.QtWidgets import QMenu
 
 from .expressions import Expression
 from .settings.config import Config
-from .voice import SYNTHESIZER_LABELS, Speaker
-from .voice.kokoro_local import ENGLISH_VOICES, MODELS, OTHER_VOICES, VOICES
+from .voice import Speaker, character_model
 from .voice.player import DEFAULT_DEVICE, SpeechPlayer
-from .voice.rvc_local import DEFAULT_F0_METHOD, F0_METHODS
 
 TEST_LINE = "Testing, testing... can you hear me? Um, this is what my voice sounds like. I hope it's okay."
 
-PITCHES = [(-2, "Lower"), (0, "Natural"), (1, "A little higher"), (2, "Higher (default)"), (4, "Highest")]
-CHARACTER_PITCHES = [(-6, "-6 semitones"), (-3, "-3"), (0, "As trained (default)"), (2, "+2"), (4, "+4"), (6, "+6"), (12, "+12 (an octave)")]
-F0_LABELS = {"rmvpe+": "Best (rmvpe+)", "rmvpe": "Good (rmvpe)", "pm": "Fastest (pm, rougher)"}
-SPEEDS = [(0.85, "Slower"), (1.0, "Normal"), (1.15, "Faster")]
 VOLUMES = [(0.25, "25%"), (0.5, "50%"), (0.8, "80%"), (1.0, "100%")]
 
 
@@ -64,54 +59,15 @@ def add_speak_menu(
     enabled.setChecked(config.voice_enabled)
     enabled.triggered.connect(lambda checked: save("enabled", bool(checked)))
 
-    # --- Engine ---
-    radio_menu(
-        menu.addMenu("Engine"), "synthesizer", list(SYNTHESIZER_LABELS.items()),
-        str(config.get("voice", "synthesizer", "kokoro") or "kokoro"),
-    )
+    # --- The one voice: shown, not chosen ---
+    model = character_model()
+    shown = menu.addAction("My voice: Alter Ego" if model is not None else "My voice: stand-in (voice file missing)")
+    shown.setEnabled(False)
 
-    # --- Character voice (RVC): the user's own model file, its pitch and quality ---
-    def choose_model() -> None:
-        current = str(config.get("voice", "rvc_model", "") or "")
-        path, _ = QFileDialog.getOpenFileName(
-            None, "Choose the character's voice model", current, "RVC voice model (*.pth);;All files (*)"
-        )
-        if path:
-            config.set("voice", "rvc_index", "")  # Found next to the model again.
-            save("rvc_model", path)
-
-    model_name = str(config.get("voice", "rvc_model", "") or "")
-    model_name = Path(model_name).name if model_name else "none chosen"
-    menu.addAction(f"Character voice model... ({model_name})").triggered.connect(choose_model)
-    radio_menu(menu.addMenu("Character voice pitch"), "rvc_pitch", CHARACTER_PITCHES, int(round(number("rvc_pitch", 0))))
-    radio_menu(
-        menu.addMenu("Character voice quality"), "rvc_f0_method", [(m, F0_LABELS[m]) for m in F0_METHODS],
-        str(config.get("voice", "rvc_f0_method", DEFAULT_F0_METHOD) or DEFAULT_F0_METHOD),
-    )
-
-    # --- Voice (Kokoro): English voices first, the rest in a submenu ---
-    voice_menu = menu.addMenu("Kokoro voice")
-    current_voice = str(config.get("voice", "kokoro_voice", "alter_ego") or "alter_ego")
-    radio_menu(voice_menu, "kokoro_voice", [(name, VOICES[name]) for name in ENGLISH_VOICES], current_voice)
-    radio_menu(voice_menu.addMenu("Other languages"), "kokoro_voice", [(name, VOICES[name]) for name in OTHER_VOICES], current_voice)
-    radio_menu(
-        menu.addMenu("Kokoro model"), "kokoro_model",
-        [(key, f"{key.title()} ({size} MB)") for key, (_file, size) in MODELS.items()],
-        str(config.get("voice", "kokoro_model", "standard") or "standard"),
-    )
-
-    # --- Delivery ---
-    radio_menu(menu.addMenu("Pitch (Kokoro voices)"), "pitch", PITCHES, int(round(number("pitch", 2))))
-    radio_menu(menu.addMenu("Speed"), "speed", SPEEDS, round(number("speed", 1.0), 2))
+    # --- Loudness and output ---
     radio_menu(menu.addMenu("Volume"), "volume", VOLUMES, round(number("volume", 0.8), 2))
 
-    crt = menu.addAction("Computer-voice effect")
-    crt.setCheckable(True)
-    crt.setChecked(bool(config.get("voice", "crt_effect", True)))
-    crt.setToolTip("A light 'speaking from inside a monitor' tone")
-    crt.triggered.connect(lambda checked: save("crt_effect", bool(checked)))
-
-    # --- Speakers (listed when the submenu opens, so newly plugged-in devices show up) ---
+    # Speakers are listed when the submenu opens, so newly plugged-in devices show up.
     speaker_menu = menu.addMenu("Speakers")
 
     def fill_speakers() -> None:

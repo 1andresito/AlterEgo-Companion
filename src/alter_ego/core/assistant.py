@@ -49,9 +49,8 @@ EXPRESSION_TAGS: dict[str, Expression] = {
 TAG_FOR_EXPRESSION = {expression: tag for tag, expression in EXPRESSION_TAGS.items()}
 
 TAG_INSTRUCTION = (
-    "Begin every reply with exactly one expression tag in square brackets that matches your mood, "
-    "chosen from: " + " ".join(f"[{tag}]" for tag in EXPRESSION_TAGS) + ". "
-    'Example: "[shy] Oh! H-hello." The tag is hidden from the user, so never mention it.'
+    "Start every reply with one hidden mood tag: " + " ".join(f"[{tag}]" for tag in EXPRESSION_TAGS) + ". "
+    'Example: "[shy] Oh! H-hello." Never mention the tag.'
 )
 
 # If a reply starts with "[" but no "]" shows up within this many characters,
@@ -108,6 +107,10 @@ _EMOJI = re.compile(
     "️‍]+"           # variation selector, zero-width joiner
 )
 _SPACE_BEFORE_PUNCTUATION = re.compile(r" +([,.!?;:])")
+# After a tool call the model starts a new turn and often repeats a mood tag mid-reply.
+_INNER_TAG = re.compile(r"\s*\[(?:" + "|".join(EXPRESSION_TAGS) + r")\]\s*", re.IGNORECASE)
+# Web answers come with markdown links; the chat shows plain text, so keep the words and the address.
+_MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 
 
 def clean_reply(text: str, final: bool) -> str:
@@ -117,6 +120,8 @@ def clean_reply(text: str, final: bool) -> str:
     hides everything after it until the closing "*" arrives, so a stage
     direction never flashes on screen half-written.
     """
+    text = _MARKDOWN_LINK.sub(lambda m: m.group(1) if m.group(1) == m.group(2) else f"{m.group(1)} ({m.group(2)})", text)
+    text = _INNER_TAG.sub(" ", text)
     text = _STAGE_DIRECTION.sub("", text)
     if "*" in text:
         if final:
@@ -155,8 +160,12 @@ class Responder(Protocol):
         personality: Personality,
         history: Sequence[Message],
         cancelled: Callable[[], bool],
+        progress: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
-        """Yield pieces of the reply. `history` already includes `text` as the last user message."""
+        """Yield pieces of the reply. `history` already includes `text` as the last user message.
+
+        `progress` takes short status text while a tool runs ("Searching the web...").
+        """
         ...
 
 
@@ -239,7 +248,7 @@ class OfflineResponder:
                 return random.choice(replies)
         return random.choice(self._fallback)
 
-    def stream_reply(self, text, personality, history, cancelled) -> Iterator[str]:
+    def stream_reply(self, text, personality, history, cancelled, progress=None) -> Iterator[str]:
         time.sleep(random.uniform(*self.THINK_DELAY_RANGE_S))
         expression, reply = self.pick(text)
         yield with_tag(expression, reply)
@@ -260,6 +269,16 @@ class ProviderResponder:
 
     def warm_up(self, progress) -> None:
         self.provider.warm_up(progress)
+        # Then get the model into memory, so the first reply does not wait for it to load.
+        # Only a head start: no model installed yet, or any trouble, is dealt with by the first reply.
+        try:
+            model = self.resolve_model()
+            progress("Waking up my brain...")
+            self.provider.load_model(model)
+        except ProviderError as error:
+            print(f"Alter Ego: could not load the model ahead of time: {error}")
+        finally:
+            progress("")
 
     def prepare(self, progress) -> None:
         self.provider.prepare(progress)
@@ -305,9 +324,9 @@ class ProviderResponder:
                 messages.append(ChatMessage("user", message.text))
         return messages
 
-    def stream_reply(self, text, personality, history, cancelled) -> Iterator[str]:
+    def stream_reply(self, text, personality, history, cancelled, progress=None) -> Iterator[str]:
         model = self.resolve_model()
-        yield from self.provider.stream_reply(self.build_messages(personality, history), model, cancelled)
+        yield from self.provider.stream_reply(self.build_messages(personality, history), model, cancelled, progress)
 
 
 # ----- Assistant -----
@@ -342,7 +361,7 @@ class _ReplyWorker(QThread):
             self._responder.prepare(self.status.emit)
             self.status.emit("")
             for piece in self._responder.stream_reply(
-                self._text, self._personality, self._history, self.isInterruptionRequested
+                self._text, self._personality, self._history, self.isInterruptionRequested, self.status.emit
             ):
                 if self.isInterruptionRequested():
                     return
@@ -436,7 +455,7 @@ class Assistant(QObject):
         worker.failed.connect(self._on_prepare_failed)
         worker.finished.connect(self._on_prepare_finished)
         self._prepare_worker = worker
-        worker.start()
+        worker.start(QThread.Priority.LowPriority)  # Models and servers must not make the desktop sluggish.
         return True
 
     def _on_prepared(self, summary: str) -> None:
@@ -495,7 +514,8 @@ class Assistant(QObject):
         worker.failed.connect(self._on_failed)
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker
-        worker.start()
+        # Below normal so a slow model or a tool never makes the desktop sluggish; the GUI thread stays normal.
+        worker.start(QThread.Priority.LowPriority)
         return True
 
     def cancel(self) -> None:

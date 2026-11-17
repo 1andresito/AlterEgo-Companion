@@ -9,7 +9,9 @@ the kokoro-onnx GitHub release into the data folder (about 340 MB for the
 standard model, 120 MB for the small one); after that everything is offline.
 
 Alter Ego's own voice is a blend of several Kokoro voices, mixed to be soft,
-youthful and gentle. Any single Kokoro voice can be chosen instead.
+youthful and gentle. The app always uses that blend (as the stand-in voice, or
+as the source the character voice converts); the other voice ids remain for
+the engine itself and its tests, not as a choice for the user.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from .device import cpu_threads
 from .synthesizer import Speech, Synthesizer, SynthesisError
 
 INSTALL_HINT = "Install it with:  pip install kokoro-onnx  (or: pip install -r requirements.txt)"
@@ -35,6 +38,7 @@ MODELS: dict[str, tuple[str, int]] = {
 }
 DEFAULT_MODEL = "standard"
 SAMPLE_RATE = 24000
+THREADS = cpu_threads()  # Half the cores: fast enough to speak ahead of playback.
 
 # Alter Ego's voice: the two best-sounding soft American voices, with a little
 # of the whispery one for breath and shyness. Weights are relative.
@@ -44,7 +48,7 @@ PRESETS: dict[str, dict[str, float]] = {
 }
 DEFAULT_VOICE = PRESET_VOICE
 
-# Kokoro voice id -> label for the menu. The first letter is the language
+# Kokoro voice id -> description. The first letter is the language
 # (a American English, b British English, j Japanese, ...), the second f/m.
 VOICES: dict[str, str] = {
     PRESET_VOICE: "Alter Ego (soft blend)",
@@ -205,7 +209,7 @@ class KokoroSynthesizer(Synthesizer):
                 )
             logging.getLogger("phonemizer").setLevel(logging.ERROR)
             try:
-                kokoro = Kokoro(str(self.model_path), str(self.voices_path))
+                kokoro = self._open(Kokoro)
                 self._style = self._blend(kokoro)
             except Exception as error:  # noqa: BLE001 - loading errors come in many types
                 raise SynthesisError(
@@ -214,6 +218,21 @@ class KokoroSynthesizer(Synthesizer):
                 ) from None
             self._kokoro = kokoro
             return kokoro
+
+    def _open(self, kokoro_class):
+        """Load the model with half the cores, so speaking never takes the whole computer."""
+        try:
+            import onnxruntime
+
+            options = onnxruntime.SessionOptions()
+            options.intra_op_num_threads = THREADS
+            options.inter_op_num_threads = 1
+            session = onnxruntime.InferenceSession(
+                str(self.model_path), sess_options=options, providers=["CPUExecutionProvider"]
+            )
+            return kokoro_class.from_session(session, str(self.voices_path))
+        except (ImportError, AttributeError, TypeError):
+            return kokoro_class(str(self.model_path), str(self.voices_path))  # An older kokoro-onnx: its own defaults.
 
     def _blend(self, kokoro):
         weights = PRESETS.get(self._voice) or {self._voice: 1.0}

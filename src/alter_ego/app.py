@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import random
 import sys
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
@@ -14,38 +16,60 @@ from .core.assistant import Assistant, OfflineResponder, ProviderResponder, Resp
 from .core.conversation import Conversation
 from .core.memory import MEMORY_FILENAME, MemoryStore
 from .core.personality import Personality
-from .expressions import ExpressionManager
+from .expressions import Expression, ExpressionManager
 from .memory_menu import add_memory_menu
 from .providers import create_provider, ollama_server
+from .providers.ollama import OllamaProvider
+from .providers.tools_mcp import ApprovalServer
 from .reactions import CharacterReactions
-from .settings.config import Config, data_dir
-from .speech import build_transcriber, build_wake_transcriber
+from .settings.config import Config, assets_dir, data_dir
+from .speech import build_transcriber, build_wake_transcriber, transcriber_signature, wake_signature
 from .speech.controller import ListeningState, PushToTalk
 from .speech.handsfree import HandsFree
 from .speech.hotkey import PushToTalkKey
 from .speech.recorder import MicrophoneRecorder
 from .speak_menu import add_speak_menu
-from .voice import Speaker, SpeakingState, SpeechPlayer, build_style, build_synthesizer
+from .tool_approval import ToolApproval
+from .voice import Speaker, SpeakingState, SpeechPlayer, build_synthesizer, synthesizer_signature
 from .voice_menu import add_voice_menu
 
 # Gap between the character and the chat panel when they sit side by side.
 CHAT_GAP = 12
 
 
-def assets_dir() -> Path:
-    """Locate the assets folder, both from a source checkout and a PyInstaller build."""
-    if getattr(sys, "frozen", False):
-        # PyInstaller unpacks bundled data into sys._MEIPASS.
-        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    else:
-        # src/alter_ego/app.py -> project root is two folders up from this package.
-        base = Path(__file__).resolve().parents[2]
-    return base / "assets"
+class EngineCache:
+    """Keeps an engine while the settings it is built from stay the same.
+
+    Every menu change runs apply_settings(); without this, each click rebuilt
+    the voice (43 s to reload the character voice, two copies in RAM meanwhile)
+    and the speech models, even when the change was about something else.
+    """
+
+    def __init__(self) -> None:
+        self._engines: dict[str, tuple[tuple, object]] = {}
+
+    def get(self, name: str, signature: tuple, build: Callable[[], object]):
+        kept = self._engines.get(name)
+        if kept is not None and kept[0] == signature:
+            return kept[1]
+        engine = build()
+        self._engines[name] = (signature, engine)
+        return engine
 
 
-def build_responder(config: Config) -> Responder:
-    """Pick the responder the settings ask for. Offline if no provider is configured."""
-    provider = create_provider(config.provider, config)
+def build_responder(config: Config, approval: ToolApproval | None = None,
+                    approval_server: ApprovalServer | None = None) -> Responder:
+    """Pick the responder the settings ask for. Offline if no provider is configured.
+
+    `approval` asks the user before the AI changes a file (Ollama calls it directly,
+    Claude Code's tool server through `approval_server`).
+    """
+    provider = create_provider(
+        config.provider,
+        config,
+        approve=approval.ask if approval is not None else None,
+        approval_address=approval_server.address if approval_server is not None else "",
+    )
     if provider is None:
         return OfflineResponder()
     return ProviderResponder(provider, config)
@@ -152,12 +176,28 @@ def run() -> int:
         if restored:
             print(f"Alter Ego: remembered {restored} message(s) from last time ({memory.path})")
 
-    assistant = Assistant(personality, conversation, build_responder(config))
+    # The AI asks before changing files: a dialog, reached directly by Ollama and through a local socket by Claude.
+    chat_holder: dict[str, QWidget | None] = {"chat": None}
+    approval = ToolApproval(lambda: chat_holder["chat"])
+    try:
+        approval_server: ApprovalServer | None = ApprovalServer(approval.ask)
+    except OSError as error:
+        print(f"Warning: no approval server ({error}); Claude won't be able to work with files.")
+        approval_server = None
+
+    assistant = Assistant(personality, conversation, build_responder(config, approval, approval_server))
+    # Ollama is switched off again when Alter Ego quits or stops using it (see ollama_server.py).
+    ollama_used = {"value": config.provider == OllamaProvider.id}
     print(f"Alter Ego: {assistant.responder.describe()} (settings: {config.path})")
 
     # Push to talk: a global key (or the chat's talk button) records, a speech engine transcribes.
     recorder = MicrophoneRecorder(str(config.get("speech", "microphone", "") or ""))
-    push_to_talk = PushToTalk(recorder, build_transcriber(config))
+    engines = EngineCache()
+
+    def transcriber():
+        return engines.get("transcriber", transcriber_signature(config), lambda: build_transcriber(config))
+
+    push_to_talk = PushToTalk(recorder, transcriber())
     hotkey = PushToTalkKey(str(config.get("speech", "push_to_talk_key", "F9") or "F9"))
     hotkey.pressed.connect(push_to_talk.start)
     hotkey.released.connect(push_to_talk.stop)
@@ -172,16 +212,28 @@ def run() -> int:
 
     # Spoken replies: a text-to-speech engine on a worker thread, played through the speakers.
     player = SpeechPlayer(str(config.get("voice", "speaker", "") or ""))
-    speaker = Speaker(player, build_synthesizer(config))
-    speaker.set_style(build_style(config))
+    def synthesizer():
+        return engines.get("synthesizer", synthesizer_signature(config), lambda: build_synthesizer(config))
+
+    speaker = Speaker(player, synthesizer())  # The voice's style is fixed: VoiceStyle's defaults.
     speaker.attach(conversation)
+    # Rendered ahead of time whenever the voice loads, so the answer to "Hey Alter Ego" plays at once.
+    speaker.quick_lines = [(line, Expression.HAPPY) for line in personality.wake_replies]
 
     # The microphone must not hear Alter Ego's own voice, and hands-free must wait while
-    # the push-to-talk key is held: hands-free is paused while either is going on.
+    # the push-to-talk key is held: hands-free is paused while either is going on. The one
+    # exception: with "interrupt by talking" on, the reply to a hands-free request keeps the
+    # microphone open, so the user can talk over it.
     def update_hands_free_pause() -> None:
-        if push_to_talk.state is ListeningState.LISTENING or speaker.speaking:
+        if push_to_talk.state is ListeningState.LISTENING:
             hands_free.pause()
+        elif speaker.speaking:
+            if hands_free.interruptible:
+                hands_free.watch_for_interrupt()
+            else:
+                hands_free.pause()
         else:
+            hands_free.stop_watching()
             hands_free.resume()
 
     push_to_talk.state_changed.connect(lambda _state: update_hands_free_pause())
@@ -193,6 +245,7 @@ def run() -> int:
             speaker.stop()
 
     push_to_talk.state_changed.connect(interrupt_when_listening)
+    hands_free.interrupted.connect(speaker.stop)  # Talking over a hands-free reply (when allowed) stops it.
 
     def number(key: str, default: float) -> float:
         try:
@@ -204,8 +257,8 @@ def run() -> int:
         device = str(config.get("speech", "microphone", "") or "")
         recorder.set_device(device)
         hands_free_recorder.set_device(device)
-        transcriber = build_transcriber(config)
-        push_to_talk.set_transcriber(transcriber)
+        main_transcriber = transcriber()
+        push_to_talk.set_transcriber(main_transcriber)
         hotkey.set_key(str(config.get("speech", "push_to_talk_key", "F9") or "F9"))
         if config.speech_enabled:
             hotkey.start()
@@ -215,18 +268,24 @@ def run() -> int:
 
         hands_free.stop()
         hands_free.set_phrase(str(config.get("speech", "wake_phrase", "") or ""))
-        hands_free.set_timings(number("awake_seconds", 3), number("follow_up_seconds", 3))
+        hands_free.set_timings(number("awake_seconds", 3))
+        hands_free.set_interrupt_by_voice(bool(config.get("speech", "interrupt_by_voice", False)))
         hands_free.set_sensitivity(str(config.get("speech", "wake_sensitivity", "normal") or "normal"))
-        hands_free.set_transcribers(build_wake_transcriber(config, transcriber), transcriber)
+        wake = engines.get("wake", wake_signature(config), lambda: build_wake_transcriber(config, main_transcriber))
+        hands_free.set_transcribers(wake, main_transcriber)
         if config.hands_free_enabled:
             hands_free.start()
 
     def apply_voice_settings() -> None:
         player.set_device(str(config.get("voice", "speaker", "") or ""))
         player.set_volume(number_in("voice", "volume", 0.8))
-        speaker.set_synthesizer(build_synthesizer(config))
-        speaker.set_style(build_style(config))
+        voice = synthesizer()
+        was_ready = speaker.enabled and voice is speaker.synthesizer
+        if voice is not speaker.synthesizer:
+            speaker.set_synthesizer(voice)  # Only a real change stops speech and reloads the voice.
         speaker.set_enabled(config.voice_enabled)
+        if not was_ready:
+            speaker.preload()  # A new or re-enabled voice loads in the background, before the next reply.
 
     def number_in(section: str, key: str, default: float) -> float:
         try:
@@ -235,7 +294,12 @@ def run() -> int:
             return default
 
     def apply_settings() -> None:
-        assistant.set_responder(build_responder(config))
+        assistant.set_responder(build_responder(config, approval, approval_server))
+        if config.provider == OllamaProvider.id:
+            ollama_used["value"] = True
+        elif ollama_used["value"]:
+            ollama_used["value"] = False
+            ollama_server.stop_all()  # Switched away from Ollama: free the memory its model holds.
         assistant.warm_up()  # Choosing Ollama starts its server at once, so the first reply is not delayed.
         if config.memory_enabled:
             memory.attach(conversation)
@@ -243,10 +307,10 @@ def run() -> int:
             memory.detach()
         apply_speech_settings()
         apply_voice_settings()
-        transcriber = push_to_talk.transcriber
+        listening_engine = push_to_talk.transcriber
         print(
             f"Alter Ego: now using {assistant.responder.describe()}; memory {'on' if memory.recording else 'off'}; "
-            f"push to talk {transcriber.describe() if transcriber else 'off'}; "
+            f"push to talk {listening_engine.describe() if listening_engine else 'off'}; "
             f"hands-free {'on' if hands_free.active else 'off'}; "
             f"voice {speaker.synthesizer.describe() if speaker.enabled else 'off'}"
         )
@@ -254,7 +318,16 @@ def run() -> int:
     # Stop any reply still streaming so the worker thread ends before the app does,
     # then save whatever was said and close the database.
     app.aboutToQuit.connect(assistant.cancel)
-    app.aboutToQuit.connect(ollama_server.stop)  # Only stops a server Alter Ego started itself.
+
+    def stop_ollama() -> None:
+        if ollama_used["value"]:
+            ollama_server.stop_all()  # Also the tray app and runners on Windows: Ollama runs only while we use it.
+        else:
+            ollama_server.stop()
+
+    app.aboutToQuit.connect(stop_ollama)
+    if approval_server is not None:
+        app.aboutToQuit.connect(approval_server.close)
     app.aboutToQuit.connect(push_to_talk.cancel)
     app.aboutToQuit.connect(hands_free.stop)
     app.aboutToQuit.connect(speaker.shutdown)
@@ -263,11 +336,15 @@ def run() -> int:
     expressions = ExpressionManager(assets / "animations")
     character = CharacterWindow(expressions)
     chat = ChatWindow(assistant, push_to_talk, hands_free, speaker)
+    chat_holder["chat"] = chat
     reactions = CharacterReactions(expressions, assistant, chat, push_to_talk, hands_free)  # noqa: F841 (kept alive by reference)
     chat.typing_finished.connect(hands_free.reply_finished)
     assistant.warm_up()  # With Ollama chosen, start its server now rather than at the first message.
     apply_speech_settings()
     player.set_volume(number_in("voice", "volume", 0.8))
+    # Load the voice now, in the background, instead of during the first reply (seconds on a GPU,
+    # longer on a laptop CPU). Skipped when the voice is off or not downloaded yet.
+    speaker.preload()
     if push_to_talk.transcriber is not None:
         print(f"Alter Ego: push to talk with {push_to_talk.transcriber.describe()}, hold {hotkey.name}")
     if hands_free.active:
@@ -324,6 +401,14 @@ def run() -> int:
             open_chat()
 
     hands_free.woke.connect(wake_up)
+
+    # The wake phrase alone: answer "Yes?" out loud so the user knows Alter Ego is listening.
+    # The lines are rendered ahead of time (see the preload below), so the answer comes at once.
+    def answer_wake() -> None:
+        if speaker.enabled:
+            speaker.say(random.choice(personality.wake_replies), Expression.HAPPY)
+
+    hands_free.listening.connect(answer_wake)
 
     # The character's right-click menu is rebuilt each time, so it asks for the shared submenus here.
     def add_shared_menus(menu: QMenu) -> None:

@@ -21,6 +21,8 @@ class Personality:
     system_prompt: str
     # Said when the chat reopens after a long pause with earlier messages still remembered.
     return_greeting: str = "Oh, you're back! I kept everything we talked about."
+    # Said out loud right after "Hey Alter Ego", so the user knows Alter Ego is listening (one at random).
+    wake_replies: tuple[str, ...] = ("Yes?",)
 
     @classmethod
     def default(cls) -> Personality:
@@ -64,4 +66,6 @@ class Personality:
             greeting=str(data.get("greeting", fallback.greeting)),
             system_prompt=str(prompt),
             return_greeting=str(data.get("return_greeting", fallback.return_greeting)),
+            wake_replies=tuple(str(line) for line in data.get("wake_replies", fallback.wake_replies) if str(line).strip())
+            or fallback.wake_replies,
         )

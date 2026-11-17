@@ -18,6 +18,9 @@ _SENTENCE_END = re.compile(r"[.!?…]+[\"'”’)\]]*(?=\s)|\n+")
 MIN_CHARS = 12
 # Long sentences are fine for the model, but the first one should start playing soon.
 MAX_CHARS = 400
+# A stammered start of a word: one to three letters and a hyphen, followed by the same letters.
+# Real prefixes ("re-read", "pre-prepared") are not stammers and are left alone.
+_STAMMER = re.compile(r"\b(?!(?:re|co|de|un|ex|bi|pre|pro|sub|non|mid|tri|anti)-)([A-Za-z]{1,3})-(?=\1)", re.IGNORECASE)
 
 
 def take_sentences(text: str, final: bool) -> tuple[list[str], int]:
@@ -82,4 +85,8 @@ def speakable(text: str) -> str:
     # "(...sorry, I lost the connection: HTTP 500 ...)" style notes: keep the words, drop the brackets.
     text = re.sub(r"\(\.\.\.", "(", text)
     text = re.sub(r"[`#*_>|]+", "", text)  # Markdown leftovers.
+    # The written stammer is character ("I-I'm", "th-thank"), but read aloud it comes out as
+    # "I I'm" or a spelled-out "th": speak the word once. "e-mail" and "well-known" are left
+    # alone because the part after the hyphen does not repeat the part before it.
+    text = _STAMMER.sub("", text)
     return " ".join(text.split()) if "\n" not in text else text

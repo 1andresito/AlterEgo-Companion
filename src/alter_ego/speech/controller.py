@@ -150,7 +150,7 @@ class PushToTalk(QObject):
         worker.failed.connect(self._on_failed)
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker
-        worker.start()
+        worker.start(QThread.Priority.LowPriority)  # Models and servers must not make the desktop sluggish.
 
     def cancel(self) -> None:
         """Drop a recording in progress and wait for recognition to end (used when quitting)."""
@@ -177,7 +177,7 @@ class PushToTalk(QObject):
         worker.failed.connect(self.failed)
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker
-        worker.start()
+        worker.start(QThread.Priority.LowPriority)  # Models and servers must not make the desktop sluggish.
         return True
 
     # ----- Worker callbacks (GUI thread) -----

@@ -1,7 +1,7 @@
 """Tests for spoken replies (v0.6.0): sentence splitting, the voice effects, the
-API engine against a fake server, the local engine without its package, and
-the Speaker state machine with a fake engine and a fake player. No speakers,
-no model files and no network needed.
+local engine without its package, the character voice with a fake converter,
+how the one fixed voice is chosen, and the Speaker state machine with a fake
+engine and a fake player. No speakers, no model files and no network needed.
 
 Run from the project root with:  python -m unittest discover -s tests -v
 """
@@ -9,16 +9,11 @@ Run from the project root with:  python -m unittest discover -s tests -v
 from __future__ import annotations
 
 import array
-import io
-import json
 import math
 import sys
 import tempfile
-import threading
 import time
 import unittest
-import wave
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,19 +27,28 @@ from alter_ego.settings.config import Config  # noqa: E402
 from alter_ego.voice import (  # noqa: E402
     CharacterVoiceSynthesizer,
     KokoroSynthesizer,
-    OpenAISynthesizer,
     Speaker,
     SpeakingState,
     Speech,
     SynthesisError,
     VoiceStyle,
-    build_style,
     build_synthesizer,
+    character_dir,
+    character_model,
 )
 from alter_ego.voice.effects import crt_voice, from_pcm16, pitch_factor, resample, to_pcm16, with_tail  # noqa: E402
 from alter_ego.voice.kokoro_local import PRESET_VOICE, VOICES, voice_language  # noqa: E402
 from alter_ego.voice.player import PlaybackError  # noqa: E402
-from alter_ego.voice.rvc_local import BASE_DOWNLOAD_MB, HUBERT_FILES, MODEL_HINT, find_index  # noqa: E402
+from alter_ego.voice.rvc_local import (  # noqa: E402
+    BASE_DOWNLOAD_MB,
+    DEFAULT_F0_METHOD,
+    DEFAULT_INDEX_RATE,
+    DEFAULT_PITCH,
+    HUBERT_FILES,
+    MODEL_HINT,
+    find_character_model,
+    find_index,
+)
 from alter_ego.voice.speaker import EXPRESSION_SPEED, NO_SYNTHESIZER_MESSAGE  # noqa: E402
 from alter_ego.voice.text import MIN_CHARS, speakable, take_sentences  # noqa: E402
 
@@ -257,7 +261,7 @@ class CharacterVoiceTests(unittest.TestCase):
         self.assertEqual(engine.download_size_mb, 338)
         engine = CharacterVoiceSynthesizer(FakeKokoro(), self.model, models_dir=self.base_models())
         self.assertFalse(engine.needs_download)
-        self.assertFalse(engine.shape_pitch)
+        self.assertFalse(engine.shape_voice)
         self.assertIn("'character'", engine.describe())
 
     def test_converts_kokoro_speech_with_the_chosen_settings(self):
@@ -316,113 +320,72 @@ class CharacterVoiceTests(unittest.TestCase):
             else:
                 sys.modules["infer_rvc_python"] = saved
 
-    def test_from_config(self):
-        engine = build_synthesizer(Config(Path("x.json"), {"voice": {
-            "synthesizer": "kokoro_rvc", "rvc_model": str(self.model), "rvc_pitch": "3", "models_dir": str(self.root),
-        }}))
-        self.assertIsInstance(engine, CharacterVoiceSynthesizer)
-        self.assertEqual(engine.pitch_semitones, 3)
-        self.assertEqual(engine.rmvpe_path, self.root / "rvc" / "rmvpe.pt")
-        self.assertEqual(engine.kokoro.model_path.parent, self.root)
+    def test_tuning_is_fixed_in_the_code(self):
+        engine, converter = self.make()
+        engine.synthesize("Hello.")
+        self.assertEqual(converter.conf["pitch_lvl"], DEFAULT_PITCH)
+        self.assertEqual(converter.conf["pitch_algo"], DEFAULT_F0_METHOD)
+        self.assertEqual(converter.conf["index_influence"], DEFAULT_INDEX_RATE)
 
 
-# ----- API engine against a fake server -----
+# ----- The one voice: chosen by what is in the character folder, never by settings -----
 
-class FakeSpeechHandler(BaseHTTPRequestHandler):
-    received: list[dict] = []
-
-    def log_message(self, *args):
-        pass
-
-    def do_GET(self):
-        if self.headers.get("Authorization") != "Bearer good-key":
-            return self._json(401, {"error": {"message": "Incorrect API key"}})
-        self._json(200, {"data": [{"id": "tts-1"}]})
-
-    def do_POST(self):
-        if self.headers.get("Authorization") != "Bearer good-key":
-            return self._json(401, {"error": {"message": "Incorrect API key"}})
-        if self.path != "/v1/audio/speech":
-            return self._json(404, {"error": {"message": "no such route"}})
-        payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        self.received.append(payload)
-        clip = tone(0.3, rate=22050)
-        buffer = io.BytesIO()
-        with wave.open(buffer, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(22050)
-            wav.writeframes(to_pcm16(clip))
-        data = buffer.getvalue()
-        self.send_response(200)
-        self.send_header("Content-Type", "audio/wav")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _json(self, status, payload):
-        data = json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-
-class OpenAISynthesizerTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.server = HTTPServer(("127.0.0.1", 0), FakeSpeechHandler)
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
-        cls.base_url = f"http://127.0.0.1:{cls.server.server_port}/v1"
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-
+class OneVoiceTests(unittest.TestCase):
     def setUp(self):
-        FakeSpeechHandler.received.clear()
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.config = Config(Path("x.json"), {"voice": {"models_dir": str(self.root)}})
+        self.characters = self.root / "voice"
 
-    def test_speaks_through_the_api(self):
-        engine = OpenAISynthesizer(self.base_url, api_key="good-key", model="tts-1", voice="shimmer")
-        speech = engine.synthesize("Hello there.", speed=1.1)
-        self.assertEqual(speech.sample_rate, 22050)
-        self.assertAlmostEqual(speech.duration, 0.3, places=2)
-        sent = FakeSpeechHandler.received[0]
-        self.assertEqual((sent["model"], sent["voice"], sent["input"], sent["response_format"]), ("tts-1", "shimmer", "Hello there.", "wav"))
-        self.assertAlmostEqual(sent["speed"], 1.1)
-        self.assertIn("shimmer", engine.prepare())
+    def test_the_voice_ships_in_the_assets_folder(self):
+        self.assertEqual(character_dir(), PROJECT_ROOT / "assets" / "voice")
 
-    def test_errors_are_explained(self):
-        with self.assertRaises(SynthesisError) as caught:
-            OpenAISynthesizer(self.base_url, api_key="bad-key").synthesize("x")
-        self.assertIn("rejected the API key", str(caught.exception))
-        with self.assertRaises(SynthesisError) as caught:
-            OpenAISynthesizer("http://127.0.0.1:9/v1", api_key="x").synthesize("x")
-        self.assertIn("couldn't connect", str(caught.exception))
+    def test_only_alter_ego_pth_counts(self):
+        self.assertIsNone(character_model(self.characters))  # the folder does not even exist yet
+        self.characters.mkdir()
+        (self.characters / "someone_else.pth").write_bytes(b"m")
+        self.assertIsNone(character_model(self.characters))  # any other model is ignored
+        model = self.characters / "alter_ego.pth"
+        model.write_bytes(b"m")
+        self.assertEqual(find_character_model(self.characters), model)
 
+    def test_an_lfs_pointer_is_not_a_model(self):
+        self.characters.mkdir()
+        model = self.characters / "alter_ego.pth"
+        model.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 55175216\n")
+        self.assertIsNone(character_model(self.characters))
+        self.assertIsInstance(build_synthesizer(self.config, self.characters), KokoroSynthesizer)
 
-class BuildTests(unittest.TestCase):
-    def test_from_config(self):
+    def test_stand_in_voice_only_when_the_file_is_missing(self):
         self.assertIsNone(build_synthesizer(Config(Path("x.json"), {"voice": {"enabled": False}})))
-        local = build_synthesizer(Config(Path("x.json"), {"voice": {"kokoro_voice": "af_heart", "models_dir": "/tmp/nowhere"}}))
-        self.assertIsInstance(local, KokoroSynthesizer)
-        self.assertEqual(local.voice, "af_heart")
-        self.assertEqual(local.model_path.parent, Path("/tmp/nowhere"))
-        api = build_synthesizer(Config(Path("x.json"), {
-            "voice": {"synthesizer": "openai", "openai_voice": "alloy"},
-            "openai": {"base_url": "https://api.groq.com/openai/v1", "api_key": "k"},
-        }))
-        self.assertIsInstance(api, OpenAISynthesizer)
-        self.assertEqual(api.voice, "alloy")
-        self.assertIsInstance(build_synthesizer(Config(Path("x.json"), {"voice": {"synthesizer": "bogus"}})), KokoroSynthesizer)
+        stand_in = build_synthesizer(self.config, self.characters)
+        self.assertIsInstance(stand_in, KokoroSynthesizer)
+        self.assertEqual(stand_in.voice, PRESET_VOICE)
+        self.assertEqual(stand_in.model_path.parent, self.root)
 
-    def test_style_from_config(self):
-        style = build_style(Config(Path("x.json"), {"voice": {"pitch": "3", "speed": 1.2, "crt_effect": False}}))
-        self.assertEqual(style, VoiceStyle(3.0, 1.2, False))
-        self.assertEqual(build_style(Config(Path("x.json"), {"voice": {"pitch": "lots"}})).pitch_semitones, 2.0)
+        self.characters.mkdir()
+        (self.characters / "alter_ego.pth").write_bytes(b"m")
+        engine = build_synthesizer(self.config, self.characters)
+        self.assertIsInstance(engine, CharacterVoiceSynthesizer)
+        self.assertEqual(engine.model_path, self.characters / "alter_ego.pth")
+        self.assertEqual(engine.pitch_semitones, DEFAULT_PITCH)
+        self.assertEqual(engine.rmvpe_path, self.root / "rvc" / "rmvpe.pt")
+        self.assertEqual(engine.kokoro.voice, PRESET_VOICE)
+
+    def test_old_voice_settings_change_nothing(self):
+        self.characters.mkdir()
+        (self.characters / "alter_ego.pth").write_bytes(b"m")
+        config = Config(Path("x.json"), {"voice": {
+            "models_dir": str(self.root), "synthesizer": "openai", "kokoro_voice": "am_adam", "kokoro_model": "small",
+            "rvc_model": str(self.root / "someone_else.pth"), "rvc_pitch": 12, "rvc_f0_method": "pm",
+        }})
+        engine = build_synthesizer(config, self.characters)
+        self.assertIsInstance(engine, CharacterVoiceSynthesizer)
+        self.assertEqual(engine.model_path, self.characters / "alter_ego.pth")
+        self.assertEqual(engine.pitch_semitones, DEFAULT_PITCH)
+        self.assertEqual(engine.kokoro.voice, PRESET_VOICE)
+        self.assertEqual(engine.kokoro.model_path.name, "kokoro-v1.0.onnx")
         self.assertEqual(set(EXPRESSION_SPEED), set(Expression))
 
 
@@ -437,7 +400,7 @@ class FakeSynthesizer:
         self.ready = False
         self.needs_download = False
         self.download_size_mb = 0
-        self.shape_pitch = True
+        self.shape_voice = True
         self.prepared = 0
 
     def describe(self):
@@ -510,12 +473,13 @@ class SpeakerTests(unittest.TestCase):
         self.assertIs(speaker.state, SpeakingState.SPEAKING)
         self.assertIs(speaker.current_message, message)
 
+        # The stammer stays in the chat text but is not spoken (see voice/text.py speakable).
         conversation.update(message, text="Oh! H-hello. I'm Alter")
         self.wait_playing(player)
-        self.assertEqual(engine.spoken[0], ("Oh! H-hello.", round(EXPRESSION_SPEED[Expression.SHY_TALK], 3)))
+        self.assertEqual(engine.spoken[0], ("Oh! hello.", round(EXPRESSION_SPEED[Expression.SHY_TALK], 3)))
         shy = EXPRESSION_SPEED[Expression.SHY_TALK]
         self.assertEqual(log["sentences"][0][0], 12)
-        self.assertAlmostEqual(log["sentences"][0][1], 0.12 / shy, places=2)
+        self.assertAlmostEqual(log["sentences"][0][1], 0.10 / shy, places=2)
         self.assertIn("Loading my voice...", log["status"])
 
         conversation.update(message, text="Oh! H-hello. I'm Alter Ego. Nice to", complete=False)
@@ -527,7 +491,7 @@ class SpeakerTests(unittest.TestCase):
         player.end_clip()
         self.wait_playing(player)
         self.assertEqual(log["sentences"][2][0], len(message.text))
-        self.assertEqual([t for t, _ in engine.spoken], ["Oh! H-hello.", "I'm Alter Ego.", "Nice to meet you"])
+        self.assertEqual([t for t, _ in engine.spoken], ["Oh! hello.", "I'm Alter Ego.", "Nice to meet you"])
         self.assertEqual(log["finished"], [])
         player.end_clip()
         self.assertTrue(process_events_until(lambda: log["finished"]))
@@ -647,6 +611,19 @@ class SpeakerTests(unittest.TestCase):
         self.wait_playing(player)
         self.assertEqual(engine.spoken[0][1], 0.707)  # produced slower by the pitch factor...
         self.assertAlmostEqual(player.played[0], 1.0, places=1)  # ...and played back faster by it: same length
+
+    def test_character_voice_is_played_exactly_as_converted(self):
+        speaker, player, engine, conversation, log = self.make()
+        speaker.set_style(VoiceStyle())  # the fixed style: pitch lift and CRT tone on for the stand-in voice
+        engine.shape_voice = False
+        source = tone(0.2)
+        engine.synthesize = lambda text, speed=1.0: (engine.spoken.append((text, round(speed, 3))), source)[1]
+        clips = []
+        player.play = lambda speech: (clips.append(speech), setattr(player, "playing", True))
+        speaker.say("Hello there.")
+        self.wait_playing(player)
+        self.assertEqual(engine.spoken[0][1], 1.0)  # no slow-down for a pitch lift
+        self.assertEqual(clips[0].samples, source.samples)  # no pitch change, no CRT tone
 
 
 if __name__ == "__main__":

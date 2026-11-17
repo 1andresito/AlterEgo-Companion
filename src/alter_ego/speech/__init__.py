@@ -40,6 +40,18 @@ def build_transcriber(config: Config) -> Transcriber | None:
     )
 
 
+def transcriber_signature(config: Config) -> tuple:
+    """Everything build_transcriber reads: equal signatures mean the engine (and its loaded model) can be kept."""
+    keys = ("transcriber", "whisper_model", "openai_model", "language")
+    return (config.speech_enabled, *(config.get("speech", key) for key in keys),
+            config.get("openai", "base_url"), config.get("openai", "api_key"))
+
+
+def wake_signature(config: Config) -> tuple:
+    """Everything build_wake_transcriber reads (the main engine only matters as present or not)."""
+    return (config.hands_free_enabled, *(config.get("speech", key) for key in ("wake_phrase", "wake_model", "language")))
+
+
 def build_wake_transcriber(config: Config, main: Transcriber | None) -> Transcriber | None:
     """The engine that listens for the wake phrase: always local Whisper, small and fast.
 
@@ -69,4 +81,6 @@ __all__ = [
     "WhisperTranscriber",
     "build_transcriber",
     "build_wake_transcriber",
+    "transcriber_signature",
+    "wake_signature",
 ]

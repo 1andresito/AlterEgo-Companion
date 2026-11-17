@@ -18,6 +18,7 @@ import urllib.request
 from typing import Callable, Iterator
 
 from .base import ChatMessage, Provider, ProviderError
+from .ollama_server import direct_url
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 CONNECT_TIMEOUT_S = 15
@@ -30,7 +31,7 @@ class OpenAICompatibleProvider(Provider):
     label = "OpenAI-compatible API (ChatGPT, Groq, LM Studio...)"
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, api_key: str = ""):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = direct_url(base_url.rstrip("/"))  # A local server (LM Studio) answers 2 s sooner on 127.0.0.1
         # The key can live in the config file or in the OPENAI_API_KEY environment variable.
         self.api_key = api_key or os.environ.get(API_KEY_ENV, "")
 
@@ -47,6 +48,7 @@ class OpenAICompatibleProvider(Provider):
         messages: list[ChatMessage],
         model: str,
         cancelled: Callable[[], bool],
+        progress: Callable[[str], None] | None = None,  # No tools here yet, so nothing to report.
     ) -> Iterator[str]:
         payload = {
             "model": model,

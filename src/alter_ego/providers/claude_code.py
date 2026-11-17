@@ -4,8 +4,11 @@ Claude Code (https://claude.com/claude-code) has a non-interactive "print"
 mode: `claude -p "<prompt>"` answers once and exits. With
 `--output-format stream-json` it writes one JSON object per line, including
 text deltas as they are generated. This provider runs that command with
-Alter Ego's personality as the system prompt and all tools switched off, so
-it is a pure chat and cannot touch the user's files.
+Alter Ego's personality as the system prompt. Claude Code's coding tools
+(shell, editing, reading the disk) are always off. Only what the user allowed
+in the AI menu is offered: Claude's own WebSearch/WebFetch for the internet,
+and Alter Ego's file tools for one folder through a small MCP server
+(tools_mcp.py), which asks the user before the first change.
 
 Conversation memory: the first message starts a session with a fresh UUID
 (`--session-id`); later messages pass `--resume <uuid>` so Claude Code keeps
@@ -23,18 +26,24 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
+from ..core.tools import FILE_TOOL_NAMES, progress_text
 from .base import ChatMessage, Provider, ProviderError
+from .tools_mcp import APPROVAL_ENV, FOLDER_ENV, SERVER_NAME, tool_server_command
 
 DEFAULT_COMMAND = "claude"
 # Model aliases Claude Code understands. "default" means: whatever Claude Code is set to.
 MODELS = ["default", "opus", "sonnet", "haiku"]
 VERSION_TIMEOUT_S = 30
 REPLY_TIMEOUT_S = 300
+WEB_TOOLS = ("WebSearch", "WebFetch")  # Claude Code's own internet tools, offered when AI -> Allow internet is on.
+TOOL_TURNS = 8  # Turns allowed when tools are on: each tool call and its answer is one.
+MCP_CONFIG_FILE = "mcp.json"
 INSTALL_HINT = "Install Claude Code from https://claude.com/claude-code, then run `claude` once and use /login."
 
 
@@ -48,6 +57,10 @@ class ClaudeCodeProvider(Provider):
         working_dir: Path | None = None,
         effort: str = "",
         session_file: Path | None = None,
+        internet: bool = False,
+        files_folder: Path | None = None,
+        approval_address: str = "",
+        tool_server: Sequence[str] | None = None,
     ):
         # `command` is normally "claude"; tests pass a list such as [python, fake_script].
         self._command = list(command) if not isinstance(command, str) else command
@@ -57,6 +70,32 @@ class ClaudeCodeProvider(Provider):
         # conversation can be resumed after Alter Ego restarts.
         self._session_file = session_file
         self._session_id: str | None = _read_session_file(session_file)
+        # Tools: Claude's own web search and fetch, and Alter Ego's file tools (tools_mcp.py) for one folder.
+        self._internet = internet
+        self._files_folder = files_folder
+        self._approval_address = approval_address
+        self._tool_server = list(tool_server) if tool_server else tool_server_command()
+
+    @property
+    def _files(self) -> bool:
+        return self._files_folder is not None
+
+    def _write_mcp_config(self) -> Path:
+        """The MCP config that tells Claude Code how to start the file-tool server."""
+        folder = self._working_dir or Path(tempfile.gettempdir()) / "alter_ego"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / MCP_CONFIG_FILE
+        config = {"mcpServers": {SERVER_NAME: {
+            "type": "stdio",
+            "command": self._tool_server[0],
+            "args": self._tool_server[1:],
+            "env": {APPROVAL_ENV: self._approval_address, FOLDER_ENV: str(self._files_folder)},
+        }}}
+        try:
+            path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        except OSError as error:
+            raise ProviderError(f"I couldn't set up my file tools ({error}).") from None
+        return path
 
     # ----- Provider interface -----
 
@@ -97,6 +136,7 @@ class ClaudeCodeProvider(Provider):
         messages: list[ChatMessage],
         model: str,
         cancelled: Callable[[], bool],
+        progress: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
         system_prompt = "\n\n".join(m.content for m in messages if m.role == "system")
         prompt = next((m.content for m in reversed(messages) if m.role == "user"), "")
@@ -106,14 +146,14 @@ class ClaudeCodeProvider(Provider):
         resuming = self._session_id is not None
         session_id = self._session_id or str(uuid.uuid4())
         try:
-            yield from self._stream_once(prompt, system_prompt, model, session_id, resuming, cancelled)
+            yield from self._stream_once(prompt, system_prompt, model, session_id, resuming, cancelled, progress)
         except ProviderError:
             self._set_session(None)
             if not resuming:
                 raise
             # The old session may have been deleted or compacted away; start a fresh one.
             session_id = str(uuid.uuid4())
-            yield from self._stream_once(prompt, system_prompt, model, session_id, False, cancelled)
+            yield from self._stream_once(prompt, system_prompt, model, session_id, False, cancelled, progress)
 
     # ----- Running the CLI -----
 
@@ -128,17 +168,24 @@ class ClaudeCodeProvider(Provider):
         return list(self._command)
 
     def _reply_args(self, prompt: str, system_prompt: str, model: str, session_id: str, resuming: bool) -> list[str]:
+        built_in = list(WEB_TOOLS) if self._internet else []
+        allowed = built_in + ([f"mcp__{SERVER_NAME}__{name}" for name in sorted(FILE_TOOL_NAMES)] if self._files else [])
         args = self._base_args() + [
             "-p", prompt,
             "--output-format", "stream-json",
             "--verbose",                  # required by stream-json in print mode
             "--include-partial-messages",  # text deltas as they are generated
-            "--tools", "",                # pure chat: no file, shell or web tools
-            "--max-turns", "1",
+            "--tools", ",".join(built_in),  # never the shell or the user's files outside the one folder
+            "--max-turns", str(TOOL_TURNS if allowed else 1),
             "--disable-slash-commands",
             "--setting-sources", "",      # ignore the user's coding hooks/plugins
+            "--strict-mcp-config",        # and the user's own MCP servers (each would be another process in RAM)
             "--system-prompt", system_prompt,
         ]
+        if self._files:
+            args += ["--mcp-config", str(self._write_mcp_config())]
+        if allowed:
+            args += ["--allowedTools", ",".join(allowed)]  # Print mode cannot ask, so the tools are pre-approved.
         if model and model != "default":
             args += ["--model", model]
         if self._effort:
@@ -184,7 +231,8 @@ class ClaudeCodeProvider(Provider):
             raise ProviderError(f"Claude Code exited with code {process.returncode}: {output.strip()[:200]}")
         return output
 
-    def _stream_once(self, prompt, system_prompt, model, session_id, resuming, cancelled) -> Iterator[str]:
+    def _stream_once(self, prompt, system_prompt, model, session_id, resuming, cancelled,
+                     progress: Callable[[str], None] | None = None) -> Iterator[str]:
         process = self._popen(self._reply_args(prompt, system_prompt, model, session_id, resuming))
         stop_watchdog = threading.Event()
 
@@ -200,6 +248,8 @@ class ClaudeCodeProvider(Provider):
         threading.Thread(target=watchdog, daemon=True).start()
 
         streamed_any = False
+        last_text = ""
+        pending_space = False
         result: dict | None = None
         noise: list[str] = []  # Non-JSON output, shown if things go wrong.
         try:
@@ -218,9 +268,23 @@ class ClaudeCodeProvider(Provider):
                     continue
                 kind = event.get("type")
                 if kind == "stream_event":
-                    delta = (event.get("event") or {}).get("delta") or {}
+                    inner = event.get("event") or {}
+                    block = inner.get("content_block") or {}
+                    if inner.get("type") == "content_block_start" and block.get("type") == "tool_use":
+                        if progress:
+                            progress(_tool_progress(str(block.get("name", ""))))
+                        continue
+                    if inner.get("type") == "message_start" and last_text and not last_text[-1].isspace():
+                        pending_space = True  # A new turn after a tool: keep its words apart from the earlier ones.
+                    delta = inner.get("delta") or {}
                     if delta.get("type") == "text_delta" and delta.get("text"):
+                        if progress and not streamed_any:
+                            progress("")
+                        if pending_space:
+                            pending_space = False
+                            yield " "
                         streamed_any = True
+                        last_text = delta["text"]
                         yield delta["text"]
                 elif kind == "result":
                     result = event
@@ -232,11 +296,23 @@ class ClaudeCodeProvider(Provider):
 
         if cancelled():
             return
+        if streamed_any and result is not None and result.get("subtype") == "error_max_turns":
+            self._set_session(session_id)  # Ran out of tool turns after saying something: keep what was said.
+            return
         if result is None or result.get("is_error") or process.returncode != 0:
             raise ProviderError(_explain_failure(result, process.returncode, noise))
         if not streamed_any and result.get("result"):
             yield str(result["result"])  # Older CLI without deltas: the whole reply at once.
         self._set_session(session_id)
+
+
+def _tool_progress(name: str) -> str:
+    """Chat status for a Claude tool call; the arguments are not known yet when the call starts."""
+    if name == "WebSearch":
+        return progress_text("web_search", {})
+    if name == "WebFetch":
+        return progress_text("read_web_page", {})
+    return progress_text(name.rsplit("__", 1)[-1], {})
 
 
 def _read_session_file(path: Path | None) -> str | None:

@@ -64,6 +64,15 @@ def add_voice_menu(
     hands_free.setEnabled(config.speech_enabled)
     hands_free.setToolTip("Keeps the microphone open, listening locally for the wake phrase")
     hands_free.triggered.connect(lambda checked: save("hands_free", bool(checked)))
+
+    # Off by default: with speakers instead of headphones Alter Ego may hear itself and stop.
+    interrupt = menu.addAction("Interrupt by talking (hands-free)")
+    interrupt.setCheckable(True)
+    interrupt.setChecked(bool(config.get("speech", "interrupt_by_voice", False)))
+    interrupt.setEnabled(config.hands_free_enabled)
+    interrupt.setToolTip("While answering a hands-free request, Alter Ego stops as soon as you start talking. "
+                         "Best with headphones.")
+    interrupt.triggered.connect(lambda checked: save("interrupt_by_voice", bool(checked)))
     radio_menu(
         "Wake sensitivity", "wake_sensitivity",
         [(level, {"low": "Low (loud, close speech only)", "normal": "Normal", "high": "High (quiet or distant speech)"}[level])

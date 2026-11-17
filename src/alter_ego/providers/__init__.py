@@ -7,6 +7,10 @@ file here and one entry to the registry below.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Callable
+
+from ..core.tools import ToolBox, default_folder
 from ..settings.config import Config, data_dir
 from .base import ChatMessage, Provider, ProviderError
 from .claude_code import ClaudeCodeProvider
@@ -25,8 +29,35 @@ PROVIDER_LABELS: dict[str, str] = {
 }
 
 
-def create_provider(provider_id: str, config: Config) -> Provider | None:
-    """Build the provider named in the config. Returns None for offline mode."""
+def tools_folder(config: Config) -> Path:
+    """The one folder the AI may work in."""
+    custom = str(config.get("tools", "folder", "") or "")
+    return Path(custom).expanduser() if custom else default_folder()
+
+
+def build_toolbox(config: Config, approve: Callable[[Path], bool] | None = None) -> ToolBox:
+    """The tools the user allowed in the AI menu. `approve` is asked before the first file change."""
+    return ToolBox(
+        folder=tools_folder(config),
+        internet=bool(config.get("tools", "internet", True)),
+        files=bool(config.get("tools", "files", True)),
+        approve=approve or (lambda _folder: False),  # Nobody to ask means no changes.
+        search_url=str(config.get("tools", "search_url", "") or ""),
+    )
+
+
+def create_provider(
+    provider_id: str,
+    config: Config,
+    approve: Callable[[Path], bool] | None = None,
+    approval_address: str = "",
+) -> Provider | None:
+    """Build the provider named in the config. Returns None for offline mode.
+
+    `approve` (Ollama) and `approval_address` (Claude Code's tool server, see
+    tools_mcp.py) are how the user is asked before the AI changes a file.
+    """
+    tools = build_toolbox(config, approve)
     if provider_id == OllamaProvider.id:
         return OllamaProvider(
             base_url=str(config.get("ollama", "base_url", "http://localhost:11434")),
@@ -34,6 +65,7 @@ def create_provider(provider_id: str, config: Config) -> Provider | None:
             auto_start=bool(config.get("ollama", "auto_start", True)),
             auto_pull=bool(config.get("ollama", "auto_pull", True)),
             default_model=str(config.get("ollama", "default_model", "") or ""),
+            tools=tools,
         )
     if provider_id == ClaudeCodeProvider.id:
         working_dir = data_dir() / "claude_code"
@@ -43,6 +75,10 @@ def create_provider(provider_id: str, config: Config) -> Provider | None:
             effort=str(config.get("claude_code", "effort", "") or ""),
             # Resume the same Claude Code session after a restart, but only while memory is on.
             session_file=working_dir / "session" if config.memory_enabled else None,
+            internet=tools.internet,
+            # File tools need someone to approve changes; without the app's approval server they stay off.
+            files_folder=tools.folder if tools.files and approval_address else None,
+            approval_address=approval_address,
         )
     if provider_id == OpenAICompatibleProvider.id:
         return OpenAICompatibleProvider(
@@ -61,6 +97,8 @@ __all__ = [
     "OllamaProvider",
     "OpenAICompatibleProvider",
     "PROVIDER_LABELS",
+    "build_toolbox",
+    "tools_folder",
     "Provider",
     "ProviderError",
     "create_provider",

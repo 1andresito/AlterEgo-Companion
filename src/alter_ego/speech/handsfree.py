@@ -4,18 +4,27 @@
                         ^                                |  (nothing said in time)             |
                         +--------------------------------+-------------------------------------+
 
+    While the reply to a hands-free request is spoken, with "interrupt by talking" on:
+    WAITING (watching) --(the user starts to speak)--> interrupted, AWAKE: what they say is the new request
+
 While WAITING the microphone stays open and the UtteranceDetector cuts the
 stream into utterances; each one is transcribed with the small, fast wake
 model and compared with the wake phrase. A command said in the same breath
 ("Hey Alter Ego, what time is it") is used at once; otherwise Alter Ego wakes
 up and the next utterance is the command, transcribed with the main engine.
-After a reply, a short follow-up window lets the user continue without the
-wake phrase. Both windows measure silence, not time since waking: while the
-user is speaking the timer keeps being pushed back, and it only runs out
-after a few seconds without a word.
+After the reply Alter Ego goes back to waiting for the wake phrase (the
+owner's choice: no listening on after a reply). The awake window measures
+silence, not time since waking: while the user is speaking the timer keeps
+being pushed back, and it only runs out after a few seconds without a word.
 
 Push to talk and hands-free share the microphone politely: the app pauses
-this controller while the push-to-talk key is held.
+this controller while the push-to-talk key is held, and while Alter Ego
+speaks, so it does not hear itself. The exception is "interrupt by talking"
+(off by default): while the reply to a hands-free request is spoken the
+microphone stays open, and as soon as the user starts to speak `interrupted`
+fires (the app stops the voice) and what they say becomes the next request.
+With speakers instead of headphones Alter Ego may hear its own voice and
+cut itself off, which is why it is opt-in.
 """
 
 from __future__ import annotations
@@ -35,10 +44,8 @@ from .wake import DEFAULT_PHRASE, match_wake_phrase
 MAX_QUEUED = 1  # Utterances kept while a scan is still running (the newest wins).
 
 DEFAULT_AWAKE_S = 3.0      # seconds of silence after the wake phrase before Alter Ego stops listening
-DEFAULT_FOLLOW_UP_S = 3.0  # seconds of silence after a reply before it stops listening; 0 = not at all
 AWAKE_MESSAGE = "I'm listening... what can I do for you?"
 RETRY_MESSAGE = "I didn't catch that. Could you say it again?"
-FOLLOW_UP_MESSAGE = "Still listening, in case there's more..."
 
 
 class HandsFreeState(Enum):
@@ -52,6 +59,8 @@ class HandsFree(QObject):
     state_changed = Signal(object)  # HandsFreeState
     status = Signal(str)            # Short text for the chat panel; "" clears it
     woke = Signal()                 # The wake phrase was heard: show Alter Ego
+    listening = Signal()            # ...and it came alone, so Alter Ego now waits for the request (time to say "yes?")
+    interrupted = Signal()          # The user started talking over a hands-free reply: stop the voice
     command = Signal(str)           # What the user asked for, ready to send
     failed = Signal(str)            # A problem, in words for the user; hands-free then switches itself off
     heard = Signal(str, bool)       # Every wake-scan transcript and whether it matched (for diagnostics)
@@ -63,7 +72,6 @@ class HandsFree(QObject):
         command_transcriber: Transcriber | None = None,
         phrase: str = DEFAULT_PHRASE,
         awake_s: float = DEFAULT_AWAKE_S,
-        follow_up_s: float = DEFAULT_FOLLOW_UP_S,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
@@ -72,13 +80,14 @@ class HandsFree(QObject):
         self._command_transcriber = command_transcriber
         self._phrase = phrase or DEFAULT_PHRASE
         self._awake_s = awake_s
-        self._follow_up_s = follow_up_s
+        self._interrupt_by_voice = False  # Talking over a hands-free reply stops it (opt-in).
+        self._watching = False            # The reply to a hands-free request is being spoken, mic open.
         self._detector = UtteranceDetector()
         self._state = HandsFreeState.OFF
         self._paused = False
         self._worker: QThread | None = None
         self._pending: list[tuple[AudioClip, Callable[[str], None]]] = []
-        self._from_hands_free = False  # The last command came from here: offer a follow-up window.
+        self._from_hands_free = False  # The reply being given answers a request made here.
         self._silence_window_s = awake_s  # How much silence ends the current awake window.
 
         self._awake_timer = QTimer(self)
@@ -104,9 +113,31 @@ class HandsFree(QObject):
     def set_phrase(self, phrase: str) -> None:
         self._phrase = phrase.strip() or DEFAULT_PHRASE
 
-    def set_timings(self, awake_s: float, follow_up_s: float) -> None:
+    def set_interrupt_by_voice(self, enabled: bool) -> None:
+        self._interrupt_by_voice = bool(enabled)
+        if not enabled:
+            self._watching = False
+
+    @property
+    def interruptible(self) -> bool:
+        """True while Alter Ego answers a hands-free request and talking over it may stop it."""
+        return (self._interrupt_by_voice and self._from_hands_free
+                and self._state in (HandsFreeState.WAITING, HandsFreeState.AWAKE))
+
+    def watch_for_interrupt(self) -> None:
+        """The reply is being spoken: keep the microphone open and stop it when the user talks."""
+        if not self.interruptible or self._watching:
+            return
+        self._watching = True
+        self._detector.reset()  # Start clean: the "Yes?" or the reply's first words must not count.
+        if self._paused:
+            self.resume()
+
+    def stop_watching(self) -> None:
+        self._watching = False
+
+    def set_timings(self, awake_s: float) -> None:
         self._awake_s = max(1.0, awake_s)
-        self._follow_up_s = max(0.0, follow_up_s)
 
     def set_transcribers(self, wake: Transcriber | None, command: Transcriber | None) -> None:
         self._wake_transcriber = wake
@@ -146,12 +177,13 @@ class HandsFree(QObject):
             worker.failed.connect(self._on_failure)
             worker.finished.connect(self._on_worker_finished)
             self._worker = worker
-            worker.start()
+            worker.start(QThread.Priority.LowPriority)  # Models and servers must not make the desktop sluggish.
         return True
 
     def stop(self) -> None:
         """Close the microphone and forget everything heard so far."""
         self._awake_timer.stop()
+        self._watching = False
         self._pending.clear()
         if self._recorder.recording:
             self._recorder.stop()
@@ -178,14 +210,15 @@ class HandsFree(QObject):
         self._paused = False
         if not self._open_microphone():
             self._set_state(HandsFreeState.OFF)
+            return
+        if self._state is HandsFreeState.AWAKE:
+            # Paused while Alter Ego said "yes?": the user gets the whole window from now, not what is left.
+            self._awake_timer.start(int(self._silence_window_s * 1000))
 
     def reply_finished(self) -> None:
-        """Alter Ego has finished answering a hands-free command: listen a little longer without the wake phrase."""
-        if not self._from_hands_free:
-            return
+        """Alter Ego has finished answering: back to waiting for the wake phrase, no listening on."""
         self._from_hands_free = False
-        if self._state is HandsFreeState.WAITING and self._follow_up_s > 0:
-            self._go_awake(FOLLOW_UP_MESSAGE, self._follow_up_s)
+        self._watching = False
 
     # ----- Audio in -----
 
@@ -200,7 +233,14 @@ class HandsFree(QObject):
     def _on_chunk(self, clip: AudioClip) -> None:
         if not self.active or self._paused:
             return
-        for utterance in self._detector.feed(clip.samples):
+        utterances = self._detector.feed(clip.samples)
+        if self._watching and (self._detector.speaking or utterances):
+            # The user talks over the reply: stop it, and treat what they say as the next request.
+            self._watching = False
+            self._from_hands_free = False
+            self.interrupted.emit()
+            self._go_awake(AWAKE_MESSAGE, self._awake_s)
+        for utterance in utterances:
             self._on_utterance(utterance)
         if self._state is HandsFreeState.AWAKE and self._detector.speaking:
             # The user is talking: the silence countdown starts over once they stop.
@@ -233,7 +273,7 @@ class HandsFree(QObject):
         worker.failed.connect(self._on_failure)
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker
-        worker.start()
+        worker.start(QThread.Priority.LowPriority)  # Models and servers must not make the desktop sluggish.
 
     def _on_wake_text(self, text: str) -> None:
         if self._state is not HandsFreeState.WAITING:
@@ -247,6 +287,7 @@ class HandsFree(QObject):
             self._deliver(remainder)  # "Hey Alter Ego, what's the time" in one breath.
         else:
             self._go_awake(AWAKE_MESSAGE, self._awake_s)
+            self.listening.emit()
 
     def _on_command_text(self, text: str) -> None:
         if self._state is not HandsFreeState.TRANSCRIBING:

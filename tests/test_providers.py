@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import struct
 import sys
 import threading
 import unittest
@@ -176,6 +178,26 @@ class OllamaProviderTests(unittest.TestCase):
         with self.assertRaises(ProviderError) as caught:
             provider.list_models()
         self.assertIn("Is it running?", str(caught.exception))
+
+    def test_dropped_connection_is_explained(self):
+        # A server that resets the connection (Ollama stopping or crashing mid-request)
+        # raises a bare ConnectionResetError on Windows; it must still reach the user in words.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+
+        def reset_once():
+            connection, _ = listener.accept()
+            connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            connection.recv(1024)
+            connection.close()  # linger 0: an RST instead of a clean close
+
+        threading.Thread(target=reset_once, daemon=True).start()
+        provider = OllamaProvider(f"http://127.0.0.1:{listener.getsockname()[1]}")
+        with self.assertRaises(ProviderError) as caught:
+            provider.list_models()
+        self.assertIn("Ollama", str(caught.exception))
 
 
 class OllamaServerTests(unittest.TestCase):

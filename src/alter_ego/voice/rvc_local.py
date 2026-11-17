@@ -2,19 +2,19 @@
 
 Kokoro (kokoro_local.py) says the words; RVC (Retrieval-based Voice Conversion)
 then changes the timbre to that of a trained voice model, so the delivery is
-Kokoro's but the voice is the character's. Conversion runs on the CPU through
-the optional `infer-rvc-python` package (PyTorch, no fairseq); on a recent
-laptop a sentence converts in about one and a half times its own length,
-which the sentence-by-sentence pipeline in speaker.py absorbs for short
-replies.
+Kokoro's but the voice is the character's. Conversion runs through the
+optional `infer-rvc-python` package (PyTorch, no fairseq), on an NVIDIA GPU
+when PyTorch has CUDA and sees one, else on the CPU (device.py decides per
+machine). On a desktop CPU a sentence converts in about 0.6 times its own
+length; the sentence-by-sentence pipeline in speaker.py absorbs that.
 
 What is needed, and where it comes from:
 
-- A voice model: a `.pth` file (and usually a `.index` file next to it)
-  trained on the character. The project ships none and points at none; the
-  user obtains one and picks it in the menu. Whether a model of a real
-  person's voice is appropriate to use is the user's decision; this is a
-  private, non-commercial fan project.
+- The voice model: `alter_ego.pth` and its `alter_ego.index`, trained by
+  the project's owner and shipped with the project in assets/voice/ (stored
+  with Git LFS). Alter Ego has exactly one voice: there is no menu, setting
+  or folder to supply another model, pitch or quality; the tuning below is
+  part of the code.
 - Two base models shared by every RVC voice, downloaded once on request
   into the data folder (about 535 MB): the RMVPE pitch tracker and the
   HuBERT speech encoder.
@@ -33,14 +33,23 @@ import warnings
 from pathlib import Path
 from typing import Callable
 
+from .device import CUDA, compute_device, cpu_threads, describe_device, use_cpu
 from .kokoro_local import KokoroSynthesizer
 from .synthesizer import Speech, Synthesizer, SynthesisError
 
 INSTALL_HINT = (
-    "Install it with:  pip install -r requirements-character-voice.txt  "
+    "Install it with the two lines at the top of requirements-character-voice.txt "
     "(it needs Python 3.10 to 3.13; make the virtual environment with one of those)"
 )
-MODEL_HINT = "Choose Spoken replies -> Character voice model... and pick the character's .pth file."
+CHARACTER_DIR = "voice"  # Folder inside assets/ that holds the one voice model, shipped with the project.
+CHARACTER_MODEL = "alter_ego.pth"
+MODEL_HINT = (
+    "My voice file (assets/voice/alter_ego.pth) is missing. It comes with the project through Git LFS: "
+    "install Git LFS, run  git lfs pull  in the project folder, then restart me."
+)
+# A file Git LFS has not downloaded yet is a short text pointer that starts with this line.
+LFS_POINTER_PREFIX = b"version https://git-lfs"
+LFS_POINTER_MAX_BYTES = 1024
 
 RMVPE_URL = "https://huggingface.co/r3gm/sonitranslate_voice_models/resolve/main/rmvpe.pt"
 HUBERT_URL = "https://huggingface.co/r3gm/hubert_base/resolve/main/"
@@ -50,11 +59,15 @@ HUBERT_FILES = ("config.json", "model.safetensors")
 BASE_DOWNLOAD_MB = 535
 
 F0_METHODS = ["rmvpe+", "rmvpe", "pm"]  # pitch trackers: best first, "pm" is fastest and roughest
+# The fixed tuning of Alter Ego's voice. RVC keeps the pitch it is given and changes only the
+# timbre, so the Kokoro blend (median about 193 Hz) is raised to the character's own speaking
+# pitch: +7 semitones gave a median of 283-287 Hz against 283 Hz in the training clip (measured
+# 2026-11-16). The index pulls the timbre toward the training voice, strongly enough to sound
+# like the character without its recording artefacts.
 DEFAULT_F0_METHOD = "rmvpe+"
-DEFAULT_INDEX_RATE = 0.5
+DEFAULT_INDEX_RATE = 0.75
+DEFAULT_PITCH = 7
 TAG = "alter_ego"  # The converter's name for the one configured voice.
-# Threads left for the desktop while PyTorch converts; 0 in the settings means "all but two".
-SPARE_THREADS = 2
 
 
 def find_index(model_path: Path) -> Path | None:
@@ -66,17 +79,39 @@ def find_index(model_path: Path) -> Path | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+def is_lfs_pointer(path: Path) -> bool:
+    """True when the file is Git LFS's placeholder, i.e. the real model was never downloaded."""
+    try:
+        if path.stat().st_size > LFS_POINTER_MAX_BYTES:
+            return False
+        with open(path, "rb") as handle:
+            return handle.read(len(LFS_POINTER_PREFIX)) == LFS_POINTER_PREFIX
+    except OSError:
+        return False
+
+
+def find_character_model(folder: Path) -> Path | None:
+    """Alter Ego's one voice model in the given folder, or None if it is missing or only an LFS pointer."""
+    model = folder / CHARACTER_MODEL
+    if not model.is_file():
+        return None
+    if is_lfs_pointer(model):
+        print(f"Warning: {model} is a Git LFS pointer, not the voice model. Run 'git lfs pull'. Using the stand-in voice.")
+        return None
+    return model
+
+
 class CharacterVoiceSynthesizer(Synthesizer):
     id = "kokoro_rvc"
-    label = "Local Kokoro + character voice (an RVC model you choose)"
-    shape_pitch = False  # The converted voice is the character's; the Kokoro pitch lift would spoil it.
+    label = "Alter Ego's character voice (Kokoro + RVC)"
+    shape_voice = False  # The converted voice is the character's; the pitch lift and CRT tone would spoil it.
 
     def __init__(
         self,
         kokoro: KokoroSynthesizer,
         model_path: str | Path = "",
         index_path: str | Path = "",
-        pitch_semitones: float = 0.0,
+        pitch_semitones: float = DEFAULT_PITCH,
         index_rate: float = DEFAULT_INDEX_RATE,
         f0_method: str = DEFAULT_F0_METHOD,
         models_dir: str | Path = ".",
@@ -205,23 +240,38 @@ class CharacterVoiceSynthesizer(Synthesizer):
             else:
                 converter = self._make_converter()
             try:
-                converter.apply_conf(
-                    tag=TAG,
-                    file_model=str(self._model_path),
-                    pitch_algo=self._f0_method,
-                    pitch_lvl=self._pitch,
-                    file_index=str(self.index_path) if self.index_path is not None else "",
-                    index_influence=self._index_rate,
-                    respiration_median_filtering=3,
-                    envelope_ratio=0.25,
-                    consonant_breath_protection=0.33,
-                )
+                self._configure(converter)
             except Exception as error:  # noqa: BLE001 - whatever the package raises, the app must survive
-                raise SynthesisError(
-                    f"I couldn't set up the character voice '{self._model_path.name}': {type(error).__name__}: {error}"
-                ) from None
+                if self._converter_factory is None and compute_device() == CUDA:
+                    # A GPU that cannot hold the models (too little memory, driver trouble): use the CPU.
+                    print(f"Warning: the voice could not load on the GPU ({type(error).__name__}: {error}); using the CPU.")
+                    use_cpu()
+                    converter = self._make_converter()
+                    try:
+                        self._configure(converter)
+                    except Exception as cpu_error:  # noqa: BLE001
+                        raise self._setup_error(cpu_error) from None
+                else:
+                    raise self._setup_error(error) from None
             self._converter = converter
             return converter
+
+    def _setup_error(self, error: Exception) -> SynthesisError:
+        name = self._model_path.name if self._model_path is not None else "?"
+        return SynthesisError(f"I couldn't set up the character voice '{name}': {type(error).__name__}: {error}")
+
+    def _configure(self, converter) -> None:
+        converter.apply_conf(
+            tag=TAG,
+            file_model=str(self._model_path),
+            pitch_algo=self._f0_method,
+            pitch_lvl=self._pitch,
+            file_index=str(self.index_path) if self.index_path is not None else "",
+            index_influence=self._index_rate,
+            respiration_median_filtering=3,
+            envelope_ratio=0.25,
+            consonant_breath_protection=0.33,
+        )
 
     def _make_converter(self):
         try:
@@ -231,10 +281,12 @@ class CharacterVoiceSynthesizer(Synthesizer):
                 from infer_rvc_python import BaseLoader
         except ImportError:
             raise SynthesisError(f"I can't use a character voice yet: the voice-conversion package is missing. {INSTALL_HINT}") from None
-        threads = self._threads or max(1, (os.cpu_count() or 4) - SPARE_THREADS)
-        torch.set_num_threads(threads)
+        on_gpu = compute_device() == CUDA
+        if not on_gpu:
+            torch.set_num_threads(self._threads or cpu_threads())
+        print(f"Alter Ego: character voice on the {describe_device()}")
         try:
-            return BaseLoader(only_cpu=True, hubert_path=str(self.hubert_dir), rmvpe_path=str(self.rmvpe_path))
+            return BaseLoader(only_cpu=not on_gpu, hubert_path=str(self.hubert_dir), rmvpe_path=str(self.rmvpe_path))
         except Exception as error:  # noqa: BLE001
             raise SynthesisError(f"I couldn't start the voice converter: {type(error).__name__}: {error}") from None
 

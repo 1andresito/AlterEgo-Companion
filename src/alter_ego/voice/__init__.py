@@ -2,28 +2,28 @@
 
 Mirrors the speech package: every engine implements the Synthesizer interface
 in synthesizer.py, and the rest of the app only talks to that.
+
+Alter Ego has one voice, and it is not a setting: the owner's RVC model
+shipped in assets/voice/, which Kokoro's speech is converted to. If that
+file is missing (a checkout without Git LFS), the soft Kokoro blend speaks
+so the app is never mute. Neither the
+menus nor config.json can choose another voice, pitch or speed; only
+whether to speak, how loud, and through which speakers.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from ..settings.config import Config, data_dir
+from ..settings.config import Config, assets_dir, data_dir
 from .kokoro_local import KokoroSynthesizer
-from .openai_tts import OpenAISynthesizer
-from .rvc_local import CharacterVoiceSynthesizer
 from .player import SpeechPlayer
-from .speaker import DEFAULT_PITCH_SEMITONES, DEFAULT_SPEED, Speaker, SpeakingState, VoiceStyle
+from .rvc_local import CHARACTER_DIR, CharacterVoiceSynthesizer, find_character_model
+from .speaker import Speaker, SpeakingState, VoiceStyle
 from .synthesizer import Speech, SynthesisError, Synthesizer
 
-# synthesizer id -> label shown in menus.
-SYNTHESIZER_LABELS: dict[str, str] = {
-    KokoroSynthesizer.id: KokoroSynthesizer.label,
-    CharacterVoiceSynthesizer.id: CharacterVoiceSynthesizer.label,
-    OpenAISynthesizer.id: OpenAISynthesizer.label,
-}
-
 MODELS_SUBDIR = "voices"
+RVC_SUBDIR = "rvc"  # The RVC base models (pitch tracker and speech encoder) shared by any voice model.
 
 
 def models_dir(config: Config) -> Path:
@@ -31,65 +31,36 @@ def models_dir(config: Config) -> Path:
     return Path(custom) if custom else data_dir() / MODELS_SUBDIR
 
 
-def build_synthesizer(config: Config) -> Synthesizer | None:
-    """The speech engine the settings ask for, or None when spoken replies are switched off."""
+def character_dir() -> Path:
+    """Where the one voice model ships: assets/voice/ in the project."""
+    return assets_dir() / CHARACTER_DIR
+
+
+def character_model(folder: Path | None = None) -> Path | None:
+    """The shipped voice model, or None if it is missing; `folder` exists for the tests."""
+    return find_character_model(folder if folder is not None else character_dir())
+
+
+def synthesizer_signature(config: Config, voice_folder: Path | None = None) -> tuple:
+    """Everything build_synthesizer reads: equal signatures mean the loaded voice (43 s to load) can be kept."""
+    return (config.voice_enabled, str(models_dir(config)), str(character_model(voice_folder)))
+
+
+def build_synthesizer(config: Config, voice_folder: Path | None = None) -> Synthesizer | None:
+    """Alter Ego's voice, or None when spoken replies are switched off."""
     if not config.voice_enabled:
         return None
-    kind = str(config.get("voice", "synthesizer", KokoroSynthesizer.id) or KokoroSynthesizer.id)
-    if kind == OpenAISynthesizer.id:
-        return OpenAISynthesizer(
-            base_url=str(config.get("openai", "base_url", "") or ""),
-            api_key=str(config.get("openai", "api_key", "") or ""),
-            model=str(config.get("voice", "openai_model", "") or ""),
-            voice=str(config.get("voice", "openai_voice", "") or ""),
-        )
-    if kind not in (KokoroSynthesizer.id, CharacterVoiceSynthesizer.id):
-        print(f"Warning: unknown voice synthesizer '{kind}' in settings. Using local Kokoro.")
-    kokoro = KokoroSynthesizer(
-        voice=str(config.get("voice", "kokoro_voice", "") or ""),
-        model=str(config.get("voice", "kokoro_model", "") or ""),
-        models_dir=models_dir(config),
-    )
-    if kind != CharacterVoiceSynthesizer.id:
+    kokoro = KokoroSynthesizer(models_dir=models_dir(config))  # Always the soft blend, standard model.
+    model = character_model(voice_folder)
+    if model is None:
         return kokoro
-
-    def number(key: str, default: float) -> float:
-        try:
-            return float(config.get("voice", key, default))
-        except (TypeError, ValueError):
-            return default
-
-    return CharacterVoiceSynthesizer(
-        kokoro,
-        model_path=str(config.get("voice", "rvc_model", "") or ""),
-        index_path=str(config.get("voice", "rvc_index", "") or ""),
-        pitch_semitones=number("rvc_pitch", 0.0),
-        index_rate=number("rvc_index_rate", 0.5),
-        f0_method=str(config.get("voice", "rvc_f0_method", "") or ""),
-        models_dir=models_dir(config) / "rvc",
-        threads=int(number("rvc_threads", 0)),
-    )
-
-
-def build_style(config: Config) -> VoiceStyle:
-    def number(key: str, default: float) -> float:
-        try:
-            return float(config.get("voice", key, default))
-        except (TypeError, ValueError):
-            return default
-
-    return VoiceStyle(
-        pitch_semitones=number("pitch", DEFAULT_PITCH_SEMITONES),
-        speed=number("speed", DEFAULT_SPEED),
-        crt_effect=bool(config.get("voice", "crt_effect", True)),
-    )
+    return CharacterVoiceSynthesizer(kokoro, model_path=model, models_dir=models_dir(config) / RVC_SUBDIR)
 
 
 __all__ = [
     "CharacterVoiceSynthesizer",
+    "synthesizer_signature",
     "KokoroSynthesizer",
-    "OpenAISynthesizer",
-    "SYNTHESIZER_LABELS",
     "Speaker",
     "SpeakingState",
     "Speech",
@@ -97,7 +68,8 @@ __all__ = [
     "SynthesisError",
     "Synthesizer",
     "VoiceStyle",
-    "build_style",
     "build_synthesizer",
+    "character_dir",
+    "character_model",
     "models_dir",
 ]

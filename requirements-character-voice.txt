@@ -1,6 +1,25 @@
-# Optional: the character voice (Spoken replies -> Engine -> Local Kokoro + character voice).
-# Needs Python 3.10 to 3.13 and downloads CPU PyTorch (about 250 MB). Install with:
+# Optional: Alter Ego's character voice (Kokoro converted with the RVC model in assets/voice/).
+# Needs Python 3.10 to 3.13 and downloads CPU PyTorch (about 250 MB). Install in two steps:
 #   pip install -r requirements-character-voice.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
-infer-rvc-python>=1.3
+#   pip install --no-deps infer-rvc-python==1.3.1
+# With an NVIDIA card, then swap in the CUDA build (about 3 GB; the voice runs about 3x faster,
+# chosen automatically at start, see src/alter_ego/voice/device.py):
+#   pip install torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+# The converter itself goes in with --no-deps because it pins pyworld 0.3.4, which has no
+# Windows wheel for Python 3.12 and would need a C++ compiler; 0.3.5 below works the same.
+pyworld>=0.3.5
+faiss-cpu==1.10.0
+ffmpeg-python>=0.2.0
+librosa
+numpy
+praat-parselmouth>=0.4.2
+soundfile
+soxr==1.1.0
+torch
+torchaudio
+torchcrepe==0.0.20
+torchvision
+transformers
+typeguard==4.2.0
 # One of its dependencies still imports pkg_resources; this setuptools has it and satisfies PyTorch too.
 setuptools==80.9.0

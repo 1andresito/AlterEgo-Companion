@@ -20,6 +20,7 @@ import queue
 import traceback
 from dataclasses import dataclass
 from enum import Enum
+from typing import Sequence
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -33,7 +34,7 @@ from .text import speakable, take_sentences
 DEFAULT_PITCH_SEMITONES = 2.0
 DEFAULT_SPEED = 1.0
 
-# Tempo factor per expression, multiplied with the user's speed setting.
+# Tempo factor per expression, multiplied with the style's speed.
 EXPRESSION_SPEED: dict[Expression, float] = {
     Expression.HAPPY: 1.0,
     Expression.TALK: 1.0,
@@ -106,33 +107,51 @@ class _SynthesisWorker(QThread):
                 self.failed.emit(job.sequence, f"something went wrong in my voice ({type(error).__name__}: {error})")
 
     def _render(self, job: _Job) -> Speech:
-        style = self.style
-        tempo = clamp_speed(style.speed) * EXPRESSION_SPEED.get(job.expression, 1.0)
-        lift = pitch_factor(style.pitch_semitones) if self._synthesizer.shape_pitch else 1.0
-        # Produced slower by the pitch factor, then played faster by the same factor: higher, same tempo.
-        speech = self._synthesizer.synthesize(job.text, speed=tempo / lift)
-        speech = resample(speech, lift)
-        if style.crt_effect:
-            speech = crt_voice(speech)
-        return speech
+        return render_speech(self._synthesizer, self.style, job.text, job.expression)
+
+
+def render_speech(synthesizer: Synthesizer, style: VoiceStyle, text: str, expression: Expression | None) -> Speech:
+    """Synthesize one sentence and shape it with the style. Worker thread; raises SynthesisError."""
+    tempo = clamp_speed(style.speed) * EXPRESSION_SPEED.get(expression, 1.0)
+    shape = synthesizer.shape_voice
+    lift = pitch_factor(style.pitch_semitones) if shape else 1.0
+    # Produced slower by the pitch factor, then played faster by the same factor: higher, same tempo.
+    speech = synthesizer.synthesize(text, speed=tempo / lift)
+    speech = resample(speech, lift)
+    if style.crt_effect and shape:
+        speech = crt_voice(speech)
+    return speech
 
 
 class _PrepareWorker(QThread):
+    """Loads the voice, then renders a few short lines ahead of time so they can play at once."""
+
     done = Signal(str)
     failed = Signal(str)
+    rendered = Signal(str, object)  # text, Speech
 
-    def __init__(self, synthesizer: Synthesizer, parent: QObject | None = None):
+    def __init__(self, synthesizer: Synthesizer, style: VoiceStyle, phrases: Sequence[tuple[str, Expression | None]],
+                 parent: QObject | None = None):
         super().__init__(parent)
         self._synthesizer = synthesizer
+        self._style = style
+        self._phrases = tuple(phrases)
 
     def run(self) -> None:
         try:
             self.done.emit(self._synthesizer.prepare())
         except SynthesisError as error:
             self.failed.emit(str(error))
+            return
         except Exception as error:  # noqa: BLE001
             traceback.print_exc()
             self.failed.emit(f"something went wrong ({type(error).__name__}: {error})")
+            return
+        for text, expression in self._phrases:
+            try:
+                self.rendered.emit(text, render_speech(self._synthesizer, self._style, speakable(text), expression))
+            except Exception as error:  # noqa: BLE001 - a missing quick line only means it is rendered when said
+                print(f"Speaker: could not prepare {text!r}: {error}")
 
 
 class Speaker(QObject):
@@ -151,6 +170,10 @@ class Speaker(QObject):
         self._enabled = True
         self._worker: _SynthesisWorker | None = None
         self._prepare_worker: _PrepareWorker | None = None
+        self._quiet_prepare = False
+        self._phrases: dict[str, Speech] = {}  # Short lines rendered ahead of time (the wake reply), by text.
+        # The lines to render ahead of time whenever the voice is loaded; app.py sets them.
+        self.quick_lines: list[tuple[str, Expression | None]] = []
         self._state = SpeakingState.IDLE
         self._broken = False  # The engine failed: stay quiet instead of failing on every sentence.
 
@@ -202,6 +225,7 @@ class Speaker(QObject):
         self.stop()
         self._end_worker()
         self._synthesizer = synthesizer
+        self._phrases.clear()  # Rendered with the old voice.
         self._broken = False
 
     def set_style(self, style: VoiceStyle) -> None:
@@ -217,13 +241,27 @@ class Speaker(QObject):
     # ----- Speaking -----
 
     def say(self, text: str, expression: Expression | None = None) -> bool:
-        """Speak a line that is not a conversation message (for example to test the voice)."""
+        """Speak a line that is not a conversation message (for example to test the voice).
+
+        A line rendered ahead of time by preload() plays at once, without waiting for the voice.
+        """
         if not self._can_speak():
             return False
         self.stop()
         self._begin(None)
+        ready = self._phrases.get(text)
+        if ready is not None:
+            sequence = self._sequence
+            self._sequence += 1
+            self._clips[sequence] = (ready, 0)
+            self._text_done = True
+            self._play_next()
+            return True
         self._queue_text(speakable(text), final=True, expression=expression)
         return True
+
+    def has_ready(self, text: str) -> bool:
+        return text in self._phrases
 
     def stop(self) -> None:
         """Stop talking at once and forget everything queued."""
@@ -247,7 +285,7 @@ class Speaker(QObject):
         if worker is not None and worker.isRunning():
             worker.wait(5000)
 
-    def prepare(self) -> bool:
+    def prepare(self, phrases: Sequence[tuple[str, Expression | None]] | None = None) -> bool:
         """Download/load the voice now. Reports through `prepared`/`failed`."""
         if self._synthesizer is None:
             self.failed.emit(NO_SYNTHESIZER_MESSAGE)
@@ -260,12 +298,29 @@ class Speaker(QObject):
             self.status.emit(f"Downloading my voice (about {size} MB, only once)..." if size else "Downloading my voice...")
         else:
             self.status.emit("Preparing my voice...")
-        worker = _PrepareWorker(synthesizer, self)
+        return self._start_prepare(self.quick_lines if phrases is None else phrases, quiet=False)
+
+    def preload(self, phrases: Sequence[tuple[str, Expression | None]] | None = None) -> bool:
+        """Load the voice in the background at startup, silently, so the first reply is not slow.
+
+        Does nothing when the voice is off or its files are not downloaded (that is
+        never done without the user asking). `phrases` are rendered right after,
+        so say() can play them at once. Problems go to the console only.
+        """
+        synthesizer = self._synthesizer
+        if not self.enabled or synthesizer is None or synthesizer.needs_download or self._prepare_worker is not None:
+            return False
+        return self._start_prepare(self.quick_lines if phrases is None else phrases, quiet=True)
+
+    def _start_prepare(self, phrases: Sequence[tuple[str, Expression | None]], quiet: bool) -> bool:
+        worker = _PrepareWorker(self._synthesizer, self._style, phrases, self)
         worker.done.connect(self._on_prepared)
         worker.failed.connect(self._on_prepare_failed)
+        worker.rendered.connect(self._on_phrase_rendered)
         worker.finished.connect(self._on_prepare_finished)
         self._prepare_worker = worker
-        worker.start()
+        self._quiet_prepare = quiet
+        worker.start(QThread.Priority.LowPriority)  # Models and servers must not make the desktop sluggish.
         return True
 
     # ----- Conversation events (GUI thread) -----
@@ -340,7 +395,7 @@ class Speaker(QObject):
             worker.ready.connect(self._on_clip_ready)
             worker.failed.connect(self._on_clip_failed)
             worker.status.connect(self.status)
-            worker.start()
+            worker.start(QThread.Priority.LowPriority)  # Models and servers must not make the desktop sluggish.
             self._worker = worker
         return self._worker
 
@@ -408,18 +463,29 @@ class Speaker(QObject):
 
     def _on_prepared(self, message: str) -> None:
         self._broken = False
-        self.prepared.emit(message)
+        if self._quiet_prepare:
+            print(f"Alter Ego: voice ready ({self._synthesizer.describe() if self._synthesizer else '?'})")
+        else:
+            self.prepared.emit(message)
 
     def _on_prepare_failed(self, message: str) -> None:
+        if self._quiet_prepare:
+            print(f"Speaker: could not preload the voice: {message}")  # The first reply will say it, in character.
+            return
         self._broken = True  # Otherwise the next reply would repeat that the voice is missing.
         self.failed.emit(message)
+
+    def _on_phrase_rendered(self, text: str, speech: Speech) -> None:
+        self._phrases[text] = speech
 
     def _on_prepare_finished(self) -> None:
         worker = self._prepare_worker
         self._prepare_worker = None
         if worker is not None:
             worker.deleteLater()
-        self.status.emit("")
+        if not self._quiet_prepare:
+            self.status.emit("")
+        self._quiet_prepare = False
 
     # ----- Helpers -----
 

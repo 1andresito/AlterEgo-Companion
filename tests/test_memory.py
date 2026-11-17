@@ -195,7 +195,7 @@ class ContextLimitTests(unittest.TestCase):
         def list_models(self):
             return ["model-a"]
 
-        def stream_reply(self, messages, model, cancelled):
+        def stream_reply(self, messages, model, cancelled, progress=None):
             self.last_messages = messages
             yield "[happy] ok"
 

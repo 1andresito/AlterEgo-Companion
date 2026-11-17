@@ -5,8 +5,13 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from alter_ego.app import run
-
 
 if __name__ == "__main__":
+    if "--tool-server" in sys.argv:
+        # Started by Claude Code as Alter Ego's file-tool server; no window, no Qt.
+        from alter_ego.providers.tools_mcp import main as serve_tools
+
+        raise SystemExit(serve_tools())
+    from alter_ego.app import run
+
     raise SystemExit(run())

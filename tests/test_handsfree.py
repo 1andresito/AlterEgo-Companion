@@ -23,7 +23,6 @@ from alter_ego.speech import WhisperTranscriber, build_transcriber, build_wake_t
 from alter_ego.speech.audio import SAMPLE_RATE, AudioClip  # noqa: E402
 from alter_ego.speech.handsfree import (  # noqa: E402
     AWAKE_MESSAGE,
-    FOLLOW_UP_MESSAGE,
     RETRY_MESSAGE,
     HandsFree,
     HandsFreeState,
@@ -185,11 +184,11 @@ class ScriptedTranscriber:
 
 
 class HandsFreeTests(unittest.TestCase):
-    def make(self, wake_texts=(), command_texts=(), awake_s=0.3, follow_up_s=0.3, **kwargs):
+    def make(self, wake_texts=(), command_texts=(), awake_s=0.3, **kwargs):
         recorder = FakeStreamRecorder(fail=kwargs.get("mic_fails", False))
         wake = ScriptedTranscriber(wake_texts) if wake_texts is not None else None
         command = ScriptedTranscriber(command_texts) if command_texts is not None else None
-        controller = HandsFree(recorder, wake, command, awake_s=awake_s, follow_up_s=follow_up_s)
+        controller = HandsFree(recorder, wake, command, awake_s=awake_s)
         log = {"states": [], "status": [], "woke": 0, "commands": [], "failed": []}
         controller.state_changed.connect(log["states"].append)
         controller.status.connect(log["status"].append)
@@ -307,8 +306,8 @@ class HandsFreeTests(unittest.TestCase):
         self.settle(controller, HandsFreeState.WAITING)
         self.assertEqual(log["commands"], [])
 
-    def test_follow_up_window_after_a_reply(self):
-        controller, recorder, _, _, log = self.make(["hey alter ego"], ["hello", "and another thing"], follow_up_s=0.3)
+    def test_no_listening_on_after_a_reply(self):
+        controller, recorder, wake, _, log = self.make(["hey alter ego", "something else"], ["hello", "never used"])
         controller.start()
         recorder.say()
         self.settle(controller, HandsFreeState.AWAKE)
@@ -316,17 +315,42 @@ class HandsFreeTests(unittest.TestCase):
         self.settle(controller, HandsFreeState.WAITING)
         self.assertEqual(log["commands"], ["hello"])
 
-        controller.reply_finished()  # Alter Ego answered: keep listening briefly without the wake phrase
-        self.assertIs(controller.state, HandsFreeState.AWAKE)
-        self.assertEqual(log["status"][-1], FOLLOW_UP_MESSAGE)
+        controller.reply_finished()  # Alter Ego answered: back to waiting for the wake phrase
+        self.assertIs(controller.state, HandsFreeState.WAITING)
+        recorder.say()  # without the wake phrase this is not a request
+        self.assertTrue(process_events_until(lambda: wake.calls == 2))
+        process_events_until(lambda: False, 0.1)
+        self.assertEqual(log["commands"], ["hello"])
+
+    def asked_hands_free(self, interrupt=True):
+        controller, recorder, _, _, log = self.make(["hey alter ego"], ["hello", "stop, tell me a joke"])
+        controller.set_interrupt_by_voice(interrupt)
+        log["interrupted"] = 0
+        controller.interrupted.connect(lambda: log.__setitem__("interrupted", log["interrupted"] + 1))
+        controller.start()
+        recorder.say()
+        self.settle(controller, HandsFreeState.AWAKE)
         recorder.say()
         self.settle(controller, HandsFreeState.WAITING)
-        self.assertEqual(log["commands"], ["hello", "and another thing"])
+        return controller, recorder, log
 
-        controller.reply_finished()  # second follow-up window, this one unused
-        self.settle(controller, HandsFreeState.WAITING)
-        controller.reply_finished()  # a reply to a typed message: no window
-        self.assertIs(controller.state, HandsFreeState.WAITING)
+    def test_talking_over_a_hands_free_reply_interrupts_it(self):
+        controller, recorder, log = self.asked_hands_free()
+        self.assertTrue(controller.interruptible)
+        controller.watch_for_interrupt()  # the reply starts to play
+        recorder.say()
+        self.assertTrue(process_events_until(lambda: log["commands"] == ["hello", "stop, tell me a joke"]))
+        self.assertEqual(log["interrupted"], 1)
+        self.assertTrue(controller.interruptible)  # the new request was made hands-free too, so its reply may be cut short
+
+    def test_interrupting_is_off_by_default_and_only_for_hands_free_replies(self):
+        controller, recorder, log = self.asked_hands_free(interrupt=False)
+        self.assertFalse(controller.interruptible)
+        controller.reply_finished()
+        controller.set_interrupt_by_voice(True)
+        self.assertFalse(controller.interruptible)  # a typed or push-to-talk request: hold the key instead
+        controller.watch_for_interrupt()
+        self.assertEqual(log["interrupted"], 0)
 
     def test_pause_and_resume_for_push_to_talk(self):
         controller, recorder, wake, _, _ = self.make(["hey alter ego"], [])
