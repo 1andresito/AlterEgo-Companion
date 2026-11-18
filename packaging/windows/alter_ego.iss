@@ -236,11 +236,10 @@ begin
   Files := FolderSize(FilesDir);
   Models := FolderSize(OllamaModelsDir);
 
-  Form := CreateCustomForm;
+  { Inno Setup 6.6+ takes the size here (unscaled; it scales it itself) and makes it read-only. }
+  Form := CreateCustomForm(500, 330, True, True);
   try
     Form.Caption := 'Uninstall Alter Ego';
-    Form.ClientWidth := ScaleX(500);
-    Form.ClientHeight := ScaleY(330);
     Form.Position := poScreenCenter;
 
     Intro := TNewStaticText.Create(Form);

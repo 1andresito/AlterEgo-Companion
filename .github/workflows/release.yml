@@ -1,11 +1,13 @@
 # Builds the downloads on the Releases page.
 #
 # Push a version tag (git tag v0.7.0 && git push origin v0.7.0) and this builds,
-# tests and publishes:
+# tests and uploads to a DRAFT release:
 #   AlterEgo-Setup-vX.Y.Z.exe              Windows installer
 #   AlterEgo-vX.Y.Z-windows-portable.zip   Windows, unzip and run
 #   AlterEgo-vX.Y.Z-linux-x86_64.tar.gz    Linux, unpack and run install.sh
-# The release notes are the version's section of CHANGELOG.md.
+# The release notes are the version's section of CHANGELOG.md. Nothing goes public
+# by itself: check the draft on the Releases page, then click "Publish release".
+# Until then it is hidden from users and from the in-app update check.
 #
 # "Run workflow" on the Actions tab does a dry run: the same builds, uploaded as
 # workflow artifacts only, with no release.
@@ -165,3 +167,4 @@ jobs:
           name: Alter Ego ${{ github.ref_name }}
           body_path: notes.md
           files: out/*
+          draft: true  # The owner publishes it by hand from the Releases page.

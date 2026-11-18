@@ -22,7 +22,8 @@ How a version goes from the code to the Releases page. Only the owner tags and p
    git push origin vX.Y.Z
    ```
 
-   The workflow builds on Windows and Linux, runs the tests, builds the program with PyInstaller, smoke-tests the file-tool server and the character voice converter (`AlterEgo --check-voice`) from the build, packages the files, and publishes the release with the changelog section. It refuses a tag that doesn't match `__version__`.
+   The workflow builds on Windows and Linux, runs the tests, builds the program with PyInstaller, smoke-tests the file-tool server and the character voice converter (`AlterEgo --check-voice`) from the build, packages the files, and creates a **draft** release with the changelog section. It refuses a tag that doesn't match `__version__`.
+9. **Publish.** On GitHub, open **Releases**, check the draft's files and notes, and click **Publish release**. A draft is hidden from users and from the in-app update check until then. If a build failed, fix it, then move the tag (`git tag -f vX.Y.Z && git push -f origin vX.Y.Z`) and delete any leftover draft.
 
 ## What CI builds
 
