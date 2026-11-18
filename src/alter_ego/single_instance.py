@@ -80,15 +80,30 @@ class SingleInstance(QObject):
             self._server = None
         self._lock.unlock()
 
+    # The socket slots are methods that find their socket with sender(), not lambdas holding self
+    # and the socket: those made a reference cycle that Python's cycle collector could free on any
+    # thread (a QThread running Python, say), deleting these objects from the wrong thread and crashing.
+
     def _on_connection(self) -> None:
         server = self._server
         while server is not None and server.hasPendingConnections():
             socket = server.nextPendingConnection()
-            socket.readyRead.connect(lambda socket=socket: self._read(socket))
-            # The other copy disconnects right after writing: read what came first, then let go.
-            socket.disconnected.connect(lambda socket=socket: (self._read(socket), socket.deleteLater()))
+            socket.readyRead.connect(self._on_ready_read)
+            socket.disconnected.connect(self._on_disconnected)
             if socket.bytesAvailable():
                 self._read(socket)
+
+    def _on_ready_read(self) -> None:
+        socket = self.sender()
+        if isinstance(socket, QLocalSocket):
+            self._read(socket)
+
+    def _on_disconnected(self) -> None:
+        # The other copy disconnects right after writing: read what came first, then let go.
+        socket = self.sender()
+        if isinstance(socket, QLocalSocket):
+            self._read(socket)
+            socket.deleteLater()
 
     def _read(self, socket: QLocalSocket) -> None:
         if SHOW.strip() in bytes(socket.readAll()):

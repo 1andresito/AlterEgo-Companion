@@ -318,11 +318,22 @@ class PushToTalkTests(unittest.TestCase):
         controller.transcribed.connect(log["text"].append)
         controller.failed.connect(log["failed"].append)
         controller.prepared.connect(log["prepared"].append)
+        self.addCleanup(self.settle, controller)
         return controller, recorder, engine, log
+
+    def settle(self, controller):
+        """Wait for the worker thread to end and be deleted. The state turns IDLE while the thread
+        may still be returning from run(); a controller collected then takes a running QThread with
+        it and crashes the test process."""
+        worker = controller._worker
+        if worker is not None:
+            worker.wait(5000)
+        self.assertTrue(process_events_until(lambda: controller._worker is None))
+        process_events_until(lambda: False, 0.05)  # let the queued deleteLater run
 
     def wait_idle(self, controller):
         self.assertTrue(process_events_until(lambda: controller.state is ListeningState.IDLE))
-        process_events_until(lambda: False, 0.05)  # let queued deleteLater/finished signals run
+        self.settle(controller)
 
     def test_hold_and_release_produces_text(self):
         controller, recorder, engine, log = self.make()

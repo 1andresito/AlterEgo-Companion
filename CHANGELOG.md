@@ -6,6 +6,7 @@ What changed in each version, newest first. The release page on GitHub shows the
 
 - **Uninstalling asks what else should go.** A window lists your memories and settings, the voice files and GPU pack, the speech-recognition models, the files Alter Ego saved for you, Ollama's AI models and Ollama itself, each with its size, plus **Everything above**. Nothing is ticked, so a plain uninstall keeps your memories for a later reinstall. On Linux, `./uninstall.sh` asks the same questions in the terminal.
 - **Fix:** a release-build test of the GPU pack check failed on machines whose Windows user folder has a short name (such as `RUNNER~1`). The check now compares real folder paths.
+- **Fix:** Alter Ego could crash some time after a second copy was started and asked it to come forward. The connection from the second copy is now cleaned up right away.
 
 ## v0.9.0: Lighter, steadier, and your GPU for the voice
 
