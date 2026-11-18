@@ -2,6 +2,20 @@
 
 What changed in each version, newest first. The release page on GitHub shows the section for that version.
 
+## v0.9.2: Real news, a stop button, and thinking you can see
+
+- **Alter Ego shows when it's thinking.** While it gets a reply ready, the chat shows `ALTER EGO > thinking...` with moving dots, so a pause no longer looks like the app froze. If it stops mid-reply to look something up, the dots come back after its words, with what it's doing: `(searching the web...)`.
+- **Real news and weather.** Asking for the news used to find newspapers named "News Today" on Wikipedia, and the weather found the city's Wikipedia page, so Alter Ego made things up or said "I don't know". News now comes from Wikipedia's daily *Current events* pages (also "news about ..."), and weather from wttr.in, now and for the next days. Other answers come with the opening paragraph of the best pages instead of a one-line snippet, so "who won the 2026 World Cup?" has the answer in it.
+- **Fix:** small models were handed search results and still said "I can't go online". The results now say plainly that they are live and should be answered from. A search whose words were wrapped one level too deep is understood too.
+- **The chat opens at the newest message**, not at the top of a long remembered conversation.
+- **A stop button.** While Alter Ego thinks, types or speaks, the **send** button becomes **stop**. It ends the reply at once (the words so far are kept) so you can talk again. You can type your next message meanwhile; **Enter** sends it once Alter Ego is done or stopped.
+- **Thinking that shows what's happening.** Alter Ego's face and words follow what it's doing, not a clock: a side glance and "thinking..." to start, an eager face and "searching the web..." during a search, a focused one while reading, an "oh!" and "looking at what I found..." when results come back. If nothing new happens for a while it goes deeper: "thinking some more..." with a shy, pondering face, then "thinking really hard..." looking a little nervous.
+- **The chat box shows everything you type.** It wraps long messages and grows up to five lines, then scrolls. **Enter** sends, **Shift+Enter** starts a new line.
+- **Danganronpa only when you ask.** Alter Ego still talks like Alter Ego, but it no longer brings up the game, Master's past or the killing game on its own. Everyday words such as "strong", "school", "hope" or saying "Alter Ego" no longer pull the story in. Ask about Danganronpa, a character or a case and it remembers as before ([how](docs/CUSTOMIZING.md#what-alter-ego-knows-about-danganronpa)).
+- **Internet first, when it's on.** With **AI** → **Allow internet** on, Alter Ego knows it can go online and today's date. It searches before answering news, weather and questions about the world ("who won...", "what is...", "how tall is..."), instead of saying "I don't know". Small talk and questions about its own story still don't go online. With the internet off, it says so kindly instead of guessing.
+- **Fix:** some replies, such as one to "Can you tell me today's news?", showed tool code like `{"type":"function","function":...}` instead of words. That form of tool call is now recognised too: Alter Ego runs the web search and answers in words, and the code is never shown.
+- **Fix:** a reply could start with a stray `}` or `"` left over from such tool code, and the voice then failed with "Nothing to synthesize". Those leftovers are removed now, and text with nothing to say aloud is simply not spoken.
+
 ## v0.9.1: Uninstall asks what to keep
 
 - **Uninstalling asks what else should go.** A window lists your memories and settings, the voice files and GPU pack, the speech-recognition models, the files Alter Ego saved for you, Ollama's AI models and Ollama itself, each with its size, plus **Everything above**. Nothing is ticked, so a plain uninstall keeps your memories for a later reinstall. On Linux, `./uninstall.sh` asks the same questions in the terminal.

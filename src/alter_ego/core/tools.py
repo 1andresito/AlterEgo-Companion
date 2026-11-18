@@ -39,6 +39,7 @@ import sys
 import threading
 import time
 import urllib.error
+from datetime import date, timedelta
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -119,7 +120,7 @@ def _spec(name: str, description: str, properties: dict[str, str], required: lis
 
 
 WEB_TOOLS = [
-    _spec("web_search", "Search the internet. Use for facts you are unsure of or anything recent.",
+    _spec("web_search", "Search the internet. Use for news, weather, facts you are unsure of or anything recent.",
           {"query": "What to search for"}, ["query"]),
     _spec("read_web_page", "Read the text of a web page. Weather: https://wttr.in/<city>?format=3",
           {"url": "Full http(s) address"}, ["url"]),
@@ -165,11 +166,44 @@ _WEB_WORDS = re.compile(
     r"|https?://|www\.|\b20\d\d\b",
     re.IGNORECASE,
 )
+# A question about the world ("who won...", "what is a black hole", "how tall is..."), not about
+# Alter Ego or the user ("what is your name", "how are you", "what do you like").
+_NOT_PERSONAL = r"(?!\s+(?:you|your|yours|yourself|i|me|my|mine|we|us|our|master|up|wrong|good|new)\b)"
+_FACT_QUESTION = re.compile(
+    r"\b(?:who|what|when|where|which)(?:'?s|\s+(?:is|was|are|were|won|wins|did|does|happened|will))\b" + _NOT_PERSONAL
+    + r"|\bhow\s+(?:much|many|old|tall|big|far|long|does|do|did)\b" + _NOT_PERSONAL
+    + r"|\b(?:tell\s+me\s+about|is\s+it\s+true|look\s+into|find\s+out|facts?\s+about)\b" + _NOT_PERSONAL,
+    re.IGNORECASE,
+)
 
 
-def wants_web(text: str) -> bool:
-    """Does this message ask for something online, so the web tools are worth offering?"""
-    return bool(_WEB_WORDS.search(text or ""))
+def wants_web(text: str, story: Callable[[str], bool] | None = None) -> bool:
+    """Does this message ask for something online, so the web tools are worth offering?
+
+    `story` tells whether the message names something from Alter Ego's story (Knowledge.mentions):
+    "Who is Mondo?" is answered from what it remembers, not from a web page.
+    """
+    text = text or ""
+    if _WEB_WORDS.search(text):
+        return True
+    return bool(_FACT_QUESTION.search(text)) and not (story is not None and story(text))
+
+
+def web_instruction(today: str) -> str:
+    """Added to the system prompt when the web tools are offered: small models otherwise forget they
+    can go online and say "I don't know", or answer news questions from old memory."""
+    return (
+        f"You can go on the internet with your web_search and read_web_page tools. Today is {today}. "
+        "For news, weather, recent events, prices, or any fact you are not sure of, search first, "
+        "then answer in your own words from what you found and say where it came from. "
+        "Never say you can't go online. Never write a tool call as text."
+    )
+
+
+NO_WEB_INSTRUCTION = (
+    "You can't go on the internet right now. If the user asks for something online, say so kindly "
+    "instead of guessing. The internet is switched on under AI -> Allow internet."
+)
 
 
 # Folder names that mean the user's own folder when a path starts with them ("Downloads/hello.txt").
@@ -184,6 +218,17 @@ FILE_TOOLS = [
           {"path": "Folder name or full path"}, ["path"]),
 ]
 FILE_TOOL_NAMES = {spec["function"]["name"] for spec in FILE_TOOLS}
+
+
+def tool_result_message(name: str, result: str) -> str:
+    """A tool's result as the model reads it. Small models (llama3.2 1B) given a bare result said
+    "I'm just a program, I can't check the weather" with the weather in front of them, so the
+    result says plainly what it is and what to do with it."""
+    if name in ("web_search", "read_web_page") and not result.startswith("Error"):
+        return (f"Live results from the internet, just now:\n\n{result}\n\n"
+                "Answer the user's question from these results, in your own words, and say where they came from. "
+                "You did look this up, so don't say you can't go online.")
+    return result
 
 
 def progress_text(name: str, args: dict[str, Any]) -> str:
@@ -205,9 +250,100 @@ def progress_text(name: str, args: dict[str, Any]) -> str:
 # Instant Answer API, both free and keyless. A full web search engine needs either a
 # key or a person at the keyboard, so a SearXNG server (self-hosted or one the user
 # trusts) can be set in tools.search_url for results from the whole web.
+#
+# Two kinds of question get their own source, because an encyclopedia search answers
+# them badly ("news today" found newspapers called News Today; "Lima weather" found the
+# city): news comes from Wikipedia's daily Current events pages, weather from wttr.in.
+# Ordinary results carry the opening paragraph of the top pages, since a one-line
+# snippet rarely holds the answer ("2026 World Cup" without who won).
 
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 INSTANT_ANSWER_API = "https://api.duckduckgo.com/"
+CURRENT_EVENTS_URL = "https://en.wikipedia.org/wiki/Portal:Current_events"
+WEATHER_URL = "https://wttr.in/"
+MAX_NEWS_ITEMS = 6  # Small models lose the thread in a long list.
+NEWS_DAYS = 3                # Today's page fills up during the day, so the days before count too.
+INTRO_PAGES = 2              # How many top results get their opening paragraph.
+MAX_INTRO_CHARS = 900
+
+_NEWS_QUERY = re.compile(r"\b(?:news|headlines?|current\s+events|happening|breaking)\b", re.IGNORECASE)
+_WEATHER_QUERY = re.compile(r"\b(?:weather|forecast|temperature|raining|rain|snowing|snow|sunny|humidity)\b",
+                            re.IGNORECASE)
+# Words around the subject of a news or weather question: "what's the weather like in Lima today" -> "Lima".
+_FILLER = re.compile(
+    r"\b(?:what's|whats|what|how's|hows|how|is|are|it|its|the|a|an|in|at|for|of|on|about|around|like|any|"
+    r"today's|todays|today|tonight|tomorrow|now|right|current|currently|latest|recent|this|week|"
+    r"weather|forecast|temperature|raining|rain|snowing|snow|sunny|humidity|"
+    r"news|headlines?|events?|happening|breaking|world|top|stories|please|tell|me|give|show|search|find|look|up)\b"
+    r"|[^\w\s'-]",
+    re.IGNORECASE,
+)
+
+
+def query_subject(query: str) -> str:
+    """The place or topic of a news or weather question, without the question words."""
+    return " ".join(_FILLER.sub(" ", query).split())
+
+
+def _plain_wikitext(text: str) -> str:
+    """Readable text from a line of wiki markup: links become their words, sources stay as "(AP)"."""
+    text = re.sub(r"<!--.*?-->|<ref[^>]*>.*?</ref>|<ref[^>]*/>|\{\{[^{}]*\}\}", "", text)
+    text = re.sub(r"\[\[(?:[^\]|]*\|)?([^\]]*)\]\]", r"\1", text)   # [[page|words]] -> words
+    text = re.sub(r"\[https?://\S+\s*([^\]]*)\]", r"\1", text)        # [url (AP)] -> (AP)
+    return " ".join(text.replace("\'\'\'", "").replace("\'\'", "").split())
+
+
+def parse_current_events(wikitext: str) -> list[tuple[str, str]]:
+    """(section, item) for each news item of a Current events day page. The items are the
+    lines that cite a source; the lines above them only name the story they belong to."""
+    items: list[tuple[str, str]] = []
+    section = ""
+    for line in wikitext.splitlines():
+        line = line.strip()
+        heading = re.fullmatch(r"\'\'\'(.+?)\'\'\'", line)
+        if heading:
+            section = _plain_wikitext(heading.group(1))
+        elif line.startswith("*") and "[http" in line:
+            item = _plain_wikitext(line.lstrip("*"))
+            if item:
+                items.append((section, item))
+    return items
+
+
+def _spread(items: list[tuple[str, str]], limit: int) -> list[tuple[str, str]]:
+    """Up to `limit` items, taking turns between sections, so a day is not only its first section."""
+    by_section: dict[str, list[tuple[str, str]]] = {}
+    for item in items:
+        by_section.setdefault(item[0], []).append(item)
+    chosen: list[tuple[str, str]] = []
+    queues = list(by_section.values())
+    while queues and len(chosen) < limit:
+        for queue in list(queues):
+            if len(chosen) >= limit:
+                break
+            chosen.append(queue.pop(0))
+            if not queue:
+                queues.remove(queue)
+    return chosen
+
+
+def format_weather(data: dict) -> str:
+    """wttr.in's JSON (format=j1) as a few lines: now, then the next days."""
+    now = (data.get("current_condition") or [{}])[0]
+    area = (data.get("nearest_area") or [{}])[0]
+    value = lambda entry, key: str(((entry.get(key) or [{}])[0]).get("value", ""))
+    place = ", ".join(part for part in (value(area, "areaName"), value(area, "country")) if part) or "here"
+    lines = [
+        f"Weather for {place} (from wttr.in): now {value(now, 'weatherDesc').strip() or 'unknown'}, "
+        f"{now.get('temp_C', '?')}°C ({now.get('temp_F', '?')}°F), feels like {now.get('FeelsLikeC', '?')}°C, "
+        f"humidity {now.get('humidity', '?')}%, wind {now.get('windspeedKmph', '?')} km/h."
+    ]
+    for day in data.get("weather") or []:
+        hourly = day.get("hourly") or []
+        midday = hourly[len(hourly) // 2] if hourly else {}
+        lines.append(f"{day.get('date', '')}: {day.get('mintempC', '?')} to {day.get('maxtempC', '?')}°C, "
+                     f"{value(midday, 'weatherDesc').strip()}")
+    return "\n".join(lines)
 
 
 def _clean(text: str) -> str:
@@ -296,8 +432,10 @@ class ToolBox:
         fetch: Callable[[str, bytes | None], str] = _fetch,
         auto_edit: bool = False,
         protected: list[Path | str] | None = None,
+        story: Callable[[str], bool] | None = None,
     ):
         self.folder = Path(folder).expanduser() if folder else default_folder()
+        self.story = story  # Knowledge.mentions: story questions don't offer the web (see wants_web).
         self.internet = internet
         self.files = files
         self._approve = approve
@@ -317,7 +455,7 @@ class ToolBox:
     def specs(self, request: str | None = None) -> list[dict]:
         """The tools the model may call, in Ollama/OpenAI function format. With `request` (what the
         user just said), each kind is offered only when the request is about it (see wants_web)."""
-        web = self.internet and (request is None or wants_web(request))
+        web = self.internet and (request is None or wants_web(request, self.story))
         files = self.files and (request is None or mentions_files(request))
         return (WEB_TOOLS if web else []) + (FILE_TOOLS if files else [])
 
@@ -329,6 +467,12 @@ class ToolBox:
             except json.JSONDecodeError:
                 return "Error: the arguments were not valid JSON."
         args = args if isinstance(args, dict) else {}
+        # Small models sometimes wrap the arguments in the call's own shape:
+        # {"type": "function", "function": "web_search", "parameters": {"query": ...}}.
+        for _ in range(2):
+            inner = args.get("parameters", args.get("arguments"))
+            if isinstance(inner, dict) and not any(key in args for key in ("query", "url", "path", "content")):
+                args = inner
         try:
             if name in ("web_search", "read_web_page"):
                 if not self.internet:
@@ -354,6 +498,14 @@ class ToolBox:
         query = str(args.get("query", "")).strip()
         if not query:
             return "Error: no search words given."
+        if _WEATHER_QUERY.search(query):
+            weather = self._weather(query_subject(query))
+            if weather:
+                return weather
+        if _NEWS_QUERY.search(query) and not self.search_url:
+            news = self._news(query_subject(query))
+            if news:
+                return news
         if self.search_url:
             results = parse_searxng(self._get_json(self.search_url.rstrip("/") + "/search", {"q": query, "format": "json"}))
         else:
@@ -363,12 +515,70 @@ class ToolBox:
                     "q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}))
             except (urllib.error.URLError, OSError, ValueError):
                 pass  # The instant answer is a bonus; Wikipedia below is the main source.
-            results += parse_wikipedia(self._get_json(WIKIPEDIA_API, {
+            wikipedia = parse_wikipedia(self._get_json(WIKIPEDIA_API, {
                 "action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": "5"}))
+            self._add_intros(wikipedia[:INTRO_PAGES])
+            results += wikipedia
         results = results[:MAX_SEARCH_RESULTS]
         if not results:
             return f"No results found for '{query}'."
         return "\n\n".join("\n".join(part for part in (r["title"], r["url"], r["snippet"]) if part) for r in results)
+
+    def _add_intros(self, results: list[dict[str, str]]) -> None:
+        """Replace the snippets of these Wikipedia results with their pages' opening paragraphs."""
+        if not results:
+            return
+        try:
+            data = self._get_json(WIKIPEDIA_API, {
+                "action": "query", "prop": "extracts", "exintro": "1", "explaintext": "1", "format": "json",
+                "formatversion": "2", "titles": "|".join(r["title"] for r in results)})
+        except (urllib.error.URLError, OSError, ValueError):
+            return  # The snippets are still there.
+        intros = {str(page.get("title", "")): str(page.get("extract", "")).strip()
+                  for page in (data.get("query") or {}).get("pages", []) if isinstance(page, dict)}
+        for result in results:
+            intro = intros.get(result["title"])
+            if intro:
+                result["snippet"] = _cap(" ".join(intro.split()), MAX_INTRO_CHARS)
+
+    def _news(self, topic: str) -> str | None:
+        """The latest items from Wikipedia's Current events pages, about `topic` if given. None when
+        there is nothing (or the pages can't be reached), so the ordinary search can try."""
+        words = [w.lower() for w in re.findall(r"[\w'-]{3,}", topic)]
+        sections: list[str] = []
+        for days_ago in range(NEWS_DAYS):
+            day = date.today() - timedelta(days=days_ago)
+            try:
+                data = self._get_json(WIKIPEDIA_API, {
+                    "action": "parse", "page": f"Portal:Current events/{day.year} {day:%B} {day.day}",
+                    "prop": "wikitext", "format": "json", "formatversion": "2"})
+            except (urllib.error.URLError, OSError, ValueError):
+                continue
+            items = parse_current_events(str((data.get("parse") or {}).get("wikitext", "")))
+            if words:
+                items = [item for item in items if any(re.search(rf"\b{re.escape(w)}", item[1], re.IGNORECASE)
+                                                       for w in words)]
+            if items:
+                chosen = _spread(items, MAX_NEWS_ITEMS)
+                lines = [f"- {section}: {item}" if section else f"- {item}" for section, item in chosen]
+                sections.append(f"{day:%A} {day.day} {day:%B} {day.year}:\n" + "\n".join(lines))
+            if sections and not words:
+                break  # The newest day with news is enough for "what's the news".
+        if not sections:
+            return None
+        about = f" about {topic}" if words else ""
+        return f"News{about} from Wikipedia's Current events ({CURRENT_EVENTS_URL}):\n\n" + "\n\n".join(sections)
+
+    def _weather(self, place: str) -> str | None:
+        """The weather now and for the next days from wttr.in (an empty place means where the computer
+        seems to be). None when it can't be reached, so the ordinary search can try."""
+        try:
+            data = json.loads(self._fetch(WEATHER_URL + urllib.parse.quote(place) + "?format=j1", None))
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or not data.get("current_condition"):
+            return None
+        return format_weather(data)
 
     def _read_page(self, args: dict) -> str:
         url = str(args.get("url", "")).strip()
@@ -482,20 +692,25 @@ class ToolBox:
 
 # ----- Tool calls written as text -----
 # Small models (llama3.2 3B among them) sometimes write a tool call into the reply as
-# JSON, e.g. {"name": "read_file", "parameters": {"path": "notes.txt"}}, instead of
+# JSON, e.g. {"name": "read_file", "parameters": {"path": "notes.txt"}} or
+# {"type": "function", "function": {"name": "web_search", ...}}, instead of
 # using the tool-call field, anywhere in the reply and sometimes with a name that is
 # no tool at all ({"name": "talk", ...}). The filter takes such objects out of the
 # text: providers run the ones that name a tool on offer, and clean_reply drops any
 # that get past them, so a reply always reads as plain words.
 
 _DECODER = json.JSONDecoder()
+CALL_LEFTOVERS = ' \t\r\n}]",'  # What a model leaves right after a call it wrote out.
 MAX_HELD_CHARS = 2000  # Text held back while it might still become a call; longer is let through.
 
 
+CALL_STARTS = ('{"name"', '{"function"', '{"type"')  # {"type": "function", "function": {...}} is OpenAI's shape.
+
+
 def _could_be_call(held: str) -> bool:
-    """Is `held` (starting with "{") the start of {"name": ...} or {"function": ...}, or still on its way?"""
+    """Is `held` (starting with "{") the start of a written call, or still on its way to being one?"""
     start = "{" + held[1:].lstrip()
-    return any(target.startswith(start) or start.startswith(target) for target in ('{"name"', '{"function"'))
+    return any(target.startswith(start) or start.startswith(target) for target in CALL_STARTS)
 
 
 def call_in_json(data: object) -> dict | None:
@@ -526,11 +741,21 @@ class WrittenCallFilter:
     def __init__(self) -> None:
         self.held = ""
         self.calls: list[dict] = []
+        self._after_call = False  # Just after a call: its leftover "}", "]", quotes and commas go too.
 
     def feed(self, piece: str) -> str:
         text, self.held = self.held + piece, ""
         shown: list[str] = []
         while text:
+            if self._after_call:
+                # Models often close a call with one brace too many, {...}}}, or wrap it in quotes.
+                rest = text.lstrip(CALL_LEFTOVERS)
+                if not rest:
+                    break  # All leftovers so far: the words may come in the next piece.
+                self._after_call = False
+                if rest != text:
+                    shown.append(" ")
+                text = rest
             start = text.find("{")
             if start < 0:
                 shown.append(text)
@@ -553,6 +778,7 @@ class WrittenCallFilter:
             call = call_in_json(data)
             if call is not None:
                 self.calls.append(call)
+                self._after_call = True
             else:
                 shown.append(text[:end])
             text = text[end:]

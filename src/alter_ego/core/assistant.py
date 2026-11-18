@@ -22,18 +22,18 @@ import random
 import re
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Callable, Iterator, Protocol, Sequence
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from ..expressions import Expression
 from ..providers.base import ChatMessage, Provider, ProviderError
 from ..settings.config import Config
 from .conversation import Conversation, Message, Role
 from .personality import Personality
-from .tools import FILES_INSTRUCTION, mentions_files, strip_written_calls
+from .tools import FILES_INSTRUCTION, NO_WEB_INSTRUCTION, mentions_files, strip_written_calls, wants_web, web_instruction
 
 # ----- Expression tags -----
 
@@ -340,6 +340,11 @@ class ProviderResponder:
             system += "\n\n" + lore
         if self.provider.file_tools and recent and mentions_files(recent[-1]):
             system += "\n\n" + FILES_INSTRUCTION
+        if recent and wants_web(recent[-1], personality.knowledge.mentions):
+            # The web tools are offered for this message (see ToolBox.specs): say so, with today's date,
+            # or the small model answers news questions from old memory or says "I don't know".
+            online = self.provider.web_tools
+            system += "\n\n" + (web_instruction(f"{date.today():%A %d %B %Y}") if online else NO_WEB_INSTRUCTION)
         messages = [ChatMessage("system", system)]
         usable = [m for m in history if m.complete and m.text]
         limit = self.context_limit()
@@ -365,6 +370,26 @@ class ProviderResponder:
 
 # ----- Assistant -----
 
+# ----- What Alter Ego is thinking about -----
+# While a reply is on its way, Assistant.thought says what Alter Ego is doing, in the
+# words the chat shows ("thinking some more...") and the face follows (reactions.py).
+# It changes when something new happens (a search starts, its results come back),
+# and goes one step deeper after a while with nothing new, never round in a loop.
+
+THINKING = "thinking"
+THINKING_MORE = "thinking some more"
+THINKING_HARD = "thinking really hard"
+LOOKING_AT_RESULTS = "looking at what I found"
+DEEPER = (THINKING, THINKING_MORE, THINKING_HARD)
+DEEPER_AFTER_MS = (6000, 12000)  # Time on one thought before the next step deeper.
+
+
+def thought_from_status(text: str) -> str:
+    """'Searching the web...' -> 'searching the web' (the chat adds its own moving dots)."""
+    text = text.strip().rstrip(".").strip()
+    return text[:1].lower() + text[1:]
+
+
 class AssistantState(Enum):
     IDLE = "idle"
     THINKING = "thinking"    # waiting for the first piece of the reply
@@ -381,6 +406,7 @@ class _ReplyWorker(QThread):
     piece = Signal(str)
     failed = Signal(str)
     status = Signal(str)  # What the provider is doing before the reply (starting, downloading); "" clears it
+    progress = Signal(str)  # A tool at work during the reply ("Searching the web..."); "" when it is done
 
     def __init__(self, responder: Responder, text: str, personality: Personality,
                  history: Sequence[Message], parent: QObject | None = None):
@@ -395,7 +421,7 @@ class _ReplyWorker(QThread):
             self._responder.prepare(self.status.emit)
             self.status.emit("")
             for piece in self._responder.stream_reply(
-                self._text, self._personality, self._history, self.isInterruptionRequested, self.status.emit
+                self._text, self._personality, self._history, self.isInterruptionRequested, self.progress.emit
             ):
                 if self.isInterruptionRequested():
                     return
@@ -439,6 +465,7 @@ class _PrepareWorker(QThread):
 class Assistant(QObject):
     state_changed = Signal(object)  # AssistantState
     status = Signal(str)            # Short progress text for the chat panel ("Starting Ollama..."); "" clears it
+    thought_changed = Signal(str)   # What Alter Ego is thinking about now (see THINKING); "" when not thinking
     warmed_up = Signal()            # warm_up() or test_connection() finished, however it went
 
     def __init__(
@@ -459,7 +486,48 @@ class Assistant(QObject):
         self._reply: Message | None = None          # The message being streamed, once visible.
         self._failed = False
         self._welcomed_back = False
+        self._thought = ""
+        self._depth = 0  # How far along DEEPER the current think is.
+        self._deeper_timer = QTimer(self)
+        self._deeper_timer.setSingleShot(True)
+        self._deeper_timer.timeout.connect(self._think_deeper)
         conversation.cleared.connect(lambda: self._responder.reset())
+
+    @property
+    def thought(self) -> str:
+        return self._thought
+
+    def _set_thought(self, thought: str, deepen: bool = True) -> None:
+        """Think about something new. With `deepen`, it turns into "thinking some more" if nothing
+        else happens for a while (only before the first words: once talking, words show progress)."""
+        self._deeper_timer.stop()
+        if deepen and thought and self._state is AssistantState.THINKING and self._depth < len(DEEPER) - 1:
+            self._deeper_timer.start(DEEPER_AFTER_MS[min(self._depth, len(DEEPER_AFTER_MS) - 1)])
+        if thought != self._thought:
+            self._thought = thought
+            self.thought_changed.emit(thought)
+
+    def _think_deeper(self) -> None:
+        if self._state is not AssistantState.THINKING:
+            return
+        self._depth = min(self._depth + 1, len(DEEPER) - 1)
+        self._set_thought(DEEPER[self._depth])
+
+    def _on_status(self, text: str) -> None:
+        """The provider getting ready (starting a server, downloading a model)."""
+        self.status.emit(text)
+        self._set_thought(thought_from_status(text) if text else DEEPER[self._depth])
+
+    def _on_progress(self, text: str) -> None:
+        """A tool at work: that is the new thought. When it is done, Alter Ego looks at what it found."""
+        self.status.emit(text)
+        self._depth = 0
+        if text:
+            self._set_thought(thought_from_status(text), deepen=False)
+        elif self._state is AssistantState.THINKING:
+            self._set_thought(LOOKING_AT_RESULTS)
+        else:
+            self._set_thought("")  # Mid-reply: the words carry on.
 
     @property
     def state(self) -> AssistantState:
@@ -546,11 +614,14 @@ class Assistant(QObject):
         self._raw = ""
         self._reply = None
         self._failed = False
+        self._depth = 0
         self._set_state(AssistantState.THINKING)
+        self._set_thought(THINKING)
 
         worker = _ReplyWorker(self._responder, text, self.personality, self.conversation.messages, self)
         worker.piece.connect(self._on_piece)
-        worker.status.connect(self.status)
+        worker.status.connect(self._on_status)
+        worker.progress.connect(self._on_progress)
         worker.failed.connect(self._on_failed)
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker
@@ -567,6 +638,31 @@ class Assistant(QObject):
         prepare = self._prepare_worker
         if prepare is not None and prepare.isRunning():
             prepare.wait(3000)
+
+    def stop(self) -> None:
+        """Stop the reply in progress now (the chat's stop button), without waiting for the worker.
+
+        The words that arrived so far are kept as the reply. The worker is asked to stop and cut
+        loose: it may still be inside a web request, but nothing it sends reaches the chat, and it
+        cleans itself up when it ends. Unlike cancel(), this never blocks the window.
+        """
+        worker = self._worker
+        if worker is None:
+            return
+        worker.requestInterruption()
+        for signal in (worker.piece, worker.status, worker.progress, worker.failed, worker.finished):
+            signal.disconnect()
+        worker.finished.connect(worker.deleteLater)
+        self._worker = None
+        self.status.emit("")
+        expression, visible, _ = split_expression_tag(self._raw)
+        visible = clean_reply(visible, final=True)
+        if self._reply is not None:
+            self.conversation.update(self._reply, text=visible or "...", complete=True)
+        elif visible:
+            self.conversation.add(Message(Role.ASSISTANT, visible, expression=expression or Expression.TALK))
+        self._reply = None
+        self._set_state(AssistantState.IDLE)
 
     # ----- Worker callbacks (run on the main thread) -----
 
@@ -628,4 +724,6 @@ class Assistant(QObject):
     def _set_state(self, state: AssistantState) -> None:
         if state is not self._state:
             self._state = state
+            if state is not AssistantState.THINKING:
+                self._set_thought("")  # Talking (or done): the words show what's happening now.
             self.state_changed.emit(state)

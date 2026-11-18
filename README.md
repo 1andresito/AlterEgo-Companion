@@ -8,7 +8,7 @@ Inspired by the digital character Alter Ego from Danganronpa. Built with Python 
 
 > This is an unofficial, non-commercial fan project. It is not affiliated with or endorsed by Spike Chunsoft or the Danganronpa franchise.
 
-**Current version: v0.9.1** ([what's new](CHANGELOG.md))
+**Current version: v0.9.2** ([what's new](CHANGELOG.md))
 
 ---
 
@@ -63,7 +63,7 @@ When a new version is out, Alter Ego asks you at start-up: **Update now**, **Not
 - **Listen.** Hold **F9** anywhere in Windows and speak, or turn on hands-free and say **"Hey Alter Ego"**, even while it is hidden in the tray. Your speech is recognised on your computer.
 - **Talk back.** Every reply is read out loud in Alter Ego's own voice, made on your computer, sentence by sentence while the reply is still arriving.
 - **Remember.** Conversations are saved on your computer, so Alter Ego picks up where you left off.
-- **Look things up.** When a question needs it, Alter Ego can search the web and read a page. Switch this off with **AI** → **Allow internet**.
+- **Look things up.** For news, weather and questions about the world, Alter Ego searches the web first and reads a page, then answers in its own words. Switch this off with **AI** → **Allow internet**.
 - **Work with files.** Ask it to make, change, read or list text files, anywhere on your computer. It asks before every change and shows you the full path. A bare file name goes in `Documents\Alter Ego`; reading somewhere else asks first, once per folder. **AI** → **Edit files without asking (risky)** skips the question for changes. It's off unless you switch it on, it warns you first, and it still asks for system folders and Alter Ego's own folders.
 - **Be honest.** When it doesn't know something and can't check, it says "I don't know" instead of guessing.
 - **Always start.** No AI, no microphone, no speakers? Alter Ego still runs and tells you, in character, what's missing.
@@ -78,9 +78,10 @@ Right-click Alter Ego (or the tray icon) for the menu.
 |---|---|
 | Open or close the chat | Left-click Alter Ego |
 | Move Alter Ego | Drag it with the left mouse button |
+| Write a longer message | The chat box grows as you type. **Enter** sends, **Shift+Enter** starts a new line |
 | Talk instead of typing | Hold **F9** (in any window), speak, let go. Or hold the **talk** button in the chat |
 | Talk without touching anything | **Voice** → **Hands-free**, then say "Hey Alter Ego" and your request |
-| Interrupt Alter Ego | Hold the talk key or the **talk** button |
+| Interrupt Alter Ego | Click **stop** in the chat (the **send** button while it thinks, types or speaks), or hold the talk key or the **talk** button |
 | Change the talk key or microphone | **Voice** |
 | Change volume or speakers, or mute | **Spoken replies** |
 | Pick another AI or model | **AI** → **Provider** / **Model** |
@@ -120,7 +121,7 @@ Alter Ego is local-first. Here is everything that can leave your computer, and w
   - With *Claude* or an *OpenAI-compatible API*, your messages, the recent conversation and the personality prompt go to that service under your account, subject to its terms.
   - Claude Code also keeps its own transcript under `~/.claude/`.
 - **Internet look-ups** (on by default, **AI** → **Allow internet**).
-  - With Ollama, only the search words go to Wikipedia and DuckDuckGo (or your own SearXNG server), plus the addresses of pages it reads. Your conversation is not sent.
+  - With Ollama, only the search words go to Wikipedia and DuckDuckGo (or your own SearXNG server), plus the addresses of pages it reads. News comes from Wikipedia's *Current events* pages. For weather, the place name goes to wttr.in (with no place, wttr.in guesses it from your internet address). Your conversation is not sent.
   - With Claude, Claude Code's own web tools are used.
 - **Your microphone.** It is open only while you hold the talk key, unless you turn on hands-free. With hands-free, the wake phrase is checked on your computer, and audio that isn't for Alter Ego is thrown away. No audio is ever saved to disk. Speech goes to an API only if you chose the API speech engine.
 - **Downloads.** Ollama, the AI model and the voice files are downloaded only when you choose them in the setup or the menu. Ollama comes from ollama.com, the model through Ollama, and the voice files from GitHub (Kokoro) and Hugging Face (two voice base models). Nothing of yours is sent with them. The Whisper speech model is downloaded from Hugging Face the first time you talk.
@@ -156,6 +157,8 @@ Anything you don't tick stays, so you can reinstall later and carry on. On Linux
 - **Heard correctly, but nothing happens:** say your request straight after the phrase, or raise `awake_seconds`.
 
 **No voice.** Check **Spoken replies** → **Speak replies out loud** and the volume. If the voice files are missing, choose **Spoken replies** → **Download my voice**. **Test my voice** plays a line.
+
+**Wrong or "I don't know" answers to news and questions.** Small models are weak at using what they look up. **Llama 3.2 1B** handles news and weather, but often misses an answer in a longer result ("who won..."). **Llama 3.2** (2 GB) or **Qwen 2.5 7B** do much better: **AI** → **Model**.
 
 **Slow replies.** Pick a smaller model (**Llama 3.2 1B**), or check **AI** → **Model**. With Claude, set `"effort": "low"` in the settings. On a computer with an NVIDIA graphics card, **Spoken replies** → **Use my NVIDIA GPU for my voice** makes the voice about 3 times faster (a one-time download of about 2.8 GB, Windows only).
 

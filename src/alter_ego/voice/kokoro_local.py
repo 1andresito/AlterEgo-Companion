@@ -157,10 +157,10 @@ class KokoroSynthesizer(Synthesizer):
         return f"My voice ('{self._voice}') is loaded and ready."
 
     def synthesize(self, text: str, speed: float = 1.0) -> Speech:
-        kokoro = self._load()
         text = text.strip()
-        if not text:
-            return Speech.empty(SAMPLE_RATE)
+        if not any(char.isalnum() for char in text):
+            return Speech.empty(SAMPLE_RATE)  # "}" or "..." alone: nothing to say, and espeak would fail on it.
+        kokoro = self._load()
         speed = max(0.5, min(2.0, float(speed)))  # kokoro-onnx asserts this range
         try:
             audio, rate = kokoro.create(text, voice=self._style, speed=speed, lang=voice_language(self._voice))

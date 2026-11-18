@@ -24,8 +24,10 @@ If the file is missing or broken, a small built-in personality is used and a war
 
 `assets/personality/knowledge.json` holds the facts of Danganronpa: Trigger Happy Havoc, written for Alter Ego to remember:
 
-- `core`: always sent with the system prompt. Who Alter Ego is, who Master (Chihiro) was, the killing game in brief, and how to talk about it: honestly and gently, never bringing up secrets, deaths or culprits unless asked, and saying "I don't remember" rather than inventing.
-- `topics`: one short text per character or case, each with `keywords`. A topic is added only when one of its keywords is in what you just said (or the message before). At most three topics are added at a time.
+- `core`: always sent with the system prompt, so it holds only who Alter Ego is (not Chihiro, made by Master) and how to talk about the story: only when you ask, honestly and gently, never bringing up secrets, deaths or culprits unless asked, and saying "I don't remember" rather than inventing. Nothing about the game's events goes here, or Alter Ego brings them up in everyday chat.
+- `topics`: one short text per subject (the game in brief, each character, each case), each with `keywords`. A topic is added only when one of its keywords is in what you just said (or the message before). At most three topics are added at a time.
+
+Keywords should be names and game words (`mondo`, `class trial`, `danganronpa`), never everyday words such as "strong", "school" or "hope", or the story comes up when you didn't ask. A question that names a keyword is also answered from this file instead of the web.
 
 The whole file is never sent at once, because small local models have little room and get confused by long prompts. To add a fact, put it in the topic it belongs to, or add a topic with its own keywords. Keep each text to a few sentences.
 

@@ -89,6 +89,10 @@ class ClaudeCodeProvider(Provider):
     def file_tools(self) -> bool:
         return self._files
 
+    @property
+    def web_tools(self) -> bool:
+        return self._internet
+
     def _write_mcp_config(self) -> Path:
         """The MCP config that tells Claude Code how to start the file-tool server."""
         folder = self._working_dir or Path(tempfile.gettempdir()) / "alter_ego"

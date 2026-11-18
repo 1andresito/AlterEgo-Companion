@@ -40,8 +40,10 @@ def protected_folders() -> list[Path]:
     return [data_dir(), program_dir()]
 
 
-def build_toolbox(config: Config, approve: Callable[[Access], bool] | None = None) -> ToolBox:
-    """The tools the user allowed in the AI menu. `approve` is asked before file changes."""
+def build_toolbox(config: Config, approve: Callable[[Access], bool] | None = None,
+                  story: Callable[[str], bool] | None = None) -> ToolBox:
+    """The tools the user allowed in the AI menu. `approve` is asked before file changes; `story`
+    tells which messages are about Alter Ego's story (Knowledge.mentions), so they don't go online."""
     return ToolBox(
         folder=tools_folder(config),
         internet=bool(config.get("tools", "internet", True)),
@@ -50,6 +52,7 @@ def build_toolbox(config: Config, approve: Callable[[Access], bool] | None = Non
         search_url=str(config.get("tools", "search_url", "") or ""),
         auto_edit=bool(config.get("tools", "auto_edit", False)),
         protected=protected_folders(),
+        story=story,
     )
 
 
@@ -58,13 +61,14 @@ def create_provider(
     config: Config,
     approve: Callable[[Access], bool] | None = None,
     approval_address: str = "",
+    story: Callable[[str], bool] | None = None,
 ) -> Provider | None:
     """Build the provider named in the config. Returns None for offline mode.
 
     `approve` (Ollama) and `approval_address` (Claude Code's tool server, see
     tools_mcp.py) are how the user is asked before the AI changes a file.
     """
-    tools = build_toolbox(config, approve)
+    tools = build_toolbox(config, approve, story)
     if provider_id == OllamaProvider.id:
         return OllamaProvider(
             base_url=str(config.get("ollama", "base_url", "http://localhost:11434")),

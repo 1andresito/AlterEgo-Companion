@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from typing import Callable, Iterator
 
-from ..core.tools import ToolBox, WrittenCallFilter, progress_text
+from ..core.tools import ToolBox, WrittenCallFilter, progress_text, tool_result_message
 from .base import ChatMessage, Provider, ProviderError
 from .https import urlopen
 from .ollama_server import DEFAULT_COMMAND, direct_url, is_local, ollama_server
@@ -73,6 +73,10 @@ class OllamaProvider(Provider):
     @property
     def file_tools(self) -> bool:
         return self.tools is not None and self.tools.files
+
+    @property
+    def web_tools(self) -> bool:
+        return self.tools is not None and self.tools.internet
 
     # ----- Getting ready -----
 
@@ -195,7 +199,7 @@ class OllamaProvider(Provider):
                 if progress:
                     progress(progress_text(name, args if isinstance(args, dict) else {}))
                 result = self.tools.run(name, args) if self.tools is not None else "Error: no tools."
-                chat.append({"role": "tool", "tool_name": name, "content": result})
+                chat.append({"role": "tool", "tool_name": name, "content": tool_result_message(name, result)})
             if progress:
                 progress("")
             if text and not text[-1].isspace():

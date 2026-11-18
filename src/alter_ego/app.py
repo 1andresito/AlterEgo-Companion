@@ -82,7 +82,8 @@ def _close(engine: object) -> None:
 
 
 def build_responder(config: Config, approval: ToolApproval | None = None,
-                    approval_server: ApprovalServer | None = None) -> Responder:
+                    approval_server: ApprovalServer | None = None,
+                    story: Callable[[str], bool] | None = None) -> Responder:
     """Pick the responder the settings ask for. Offline if no provider is configured.
 
     `approval` asks the user before the AI changes a file (Ollama calls it directly,
@@ -93,6 +94,7 @@ def build_responder(config: Config, approval: ToolApproval | None = None,
         config,
         approve=approval.ask if approval is not None else None,
         approval_address=approval_server.address if approval_server is not None else "",
+        story=story,
     )
     if provider is None:
         return OfflineResponder()
@@ -220,7 +222,7 @@ def run(on_single_copy: Callable[[], None] | None = None) -> int:
         print(f"Warning: no approval server ({error}); Claude won't be able to work with files.")
         approval_server = None
 
-    assistant = Assistant(personality, conversation, build_responder(config, approval, approval_server))
+    assistant = Assistant(personality, conversation, build_responder(config, approval, approval_server, personality.knowledge.mentions))
     # Ollama is switched off again when Alter Ego quits or stops using it (see ollama_server.py).
     ollama_used = {"value": config.provider == OllamaProvider.id}
     print(f"Alter Ego: {assistant.responder.describe()} (settings: {config.path})")
@@ -329,7 +331,7 @@ def run(on_single_copy: Callable[[], None] | None = None) -> int:
             return default
 
     def apply_settings() -> None:
-        assistant.set_responder(build_responder(config, approval, approval_server))
+        assistant.set_responder(build_responder(config, approval, approval_server, personality.knowledge.mentions))
         if config.provider == OllamaProvider.id:
             ollama_used["value"] = True
         elif ollama_used["value"]:

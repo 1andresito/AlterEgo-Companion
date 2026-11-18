@@ -2,7 +2,8 @@
 
 The facts live in assets/personality/knowledge.json:
 
-    "core":   always in the system prompt (who Alter Ego is, Chihiro, the game in brief)
+    "core":   always in the system prompt: only who Alter Ego is, so the story never
+              comes up in everyday chat
     "topics": [{"keywords": [...], "text": "..."}]  added when a keyword is in what
               the user just said, at most MAX_TOPICS at a time
 
@@ -62,6 +63,11 @@ class Knowledge:
             if keywords:
                 topics.append(Topic(keywords, str(entry["text"]).strip()))
         return cls(str(core).strip(), tuple(topics))
+
+    def mentions(self, text: str) -> bool:
+        """Does `text` name something from the story (a topic keyword)? Such questions are answered
+        from this knowledge, not looked up online (see core/tools.py wants_web)."""
+        return any(topic.score(text) for topic in self.topics)
 
     def prompt_for(self, recent: Sequence[str]) -> str:
         """The core, plus the topics the user's recent messages are about (latest first in weight)."""

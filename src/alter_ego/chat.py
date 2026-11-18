@@ -12,14 +12,15 @@ as finished only when the last clip has been played.
 from __future__ import annotations
 
 import html
+import time
 from datetime import date, timedelta
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QTextBrowser,
     QVBoxLayout,
@@ -48,6 +49,12 @@ TYPE_CHARS_PER_TICK = 2.0
 VOICE_LEAD = 0.9
 # Within this many pixels of the end counts as "at the bottom": the view then follows new text.
 SCROLL_SLACK_PX = 4
+# The "..." shown while Alter Ego thinks: one more dot this often.
+DOTS_INTERVAL_MS = 400
+# Mid-reply, after this long with no new words (a web search, a slow model), the dots come back.
+STALL_S = 0.8
+# The input box grows with its text up to this many lines, then scrolls.
+INPUT_MAX_LINES = 5
 
 STYLE = """
 QTextBrowser {
@@ -57,7 +64,7 @@ QTextBrowser {
     font-family: Consolas, "Courier New", monospace;
     font-size: 10pt;
 }
-QLineEdit {
+QPlainTextEdit {
     background: #0b1f0b;
     border: 1px solid #4cff28;
     border-radius: 4px;
@@ -67,7 +74,7 @@ QLineEdit {
     font-size: 10pt;
     selection-background-color: #3a8a1a;
 }
-QLineEdit:disabled { color: #6f9a5a; border-color: #2f6d12; }
+QPlainTextEdit:disabled { color: #6f9a5a; border-color: #2f6d12; }
 QPushButton {
     background: #10250d;
     border: 1px solid #8dff45;
@@ -80,6 +87,8 @@ QPushButton {
 QPushButton:hover { background: #1a3a14; }
 QPushButton:pressed { background: #2f6d12; }
 QPushButton:disabled { color: #6f9a5a; border-color: #2f6d12; }
+QPushButton[stopping="true"] { color: #8fae7c; border-color: #4f7f35; background: #0d1a0b; }
+QPushButton[stopping="true"]:hover { color: #e4ffd6; border-color: #8dff45; }
 QPushButton#headerButton { border: none; background: transparent; padding: 0 6px; font-size: 11pt; }
 QPushButton#headerButton:hover { color: #ffffff; }
 QLabel#title { color: #baff85; font-family: Consolas, "Courier New", monospace; font-size: 9pt; letter-spacing: 1px; }
@@ -100,6 +109,63 @@ def day_label(day: date) -> str:
     if day.year != today.year:
         label += f" {day.year}"
     return label
+
+
+class ChatInput(QPlainTextEdit):
+    """The message box: wraps long text and grows to INPUT_MAX_LINES lines, so nothing typed is hidden.
+
+    Enter sends (the `submitted` signal); Shift+Enter starts a new line.
+    """
+
+    submitted = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTabChangesFocus(True)
+        self.document().setDocumentMargin(1)  # The style sheet's padding is enough; one empty line looks like the old box.
+        # A plain-text document counts its size in lines, wrapped lines included.
+        self.document().documentLayout().documentSizeChanged.connect(lambda _size: self.fit())
+        self.fit()
+
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, text: str) -> None:
+        self.setPlainText(text)
+        self.moveCursor(QTextCursor.MoveOperation.End)
+
+    def lines(self) -> int:
+        return max(1, int(self.document().size().height()))
+
+    def fit(self) -> None:
+        """As tall as the text, between one line and INPUT_MAX_LINES."""
+        lines = min(self.lines(), INPUT_MAX_LINES)
+        frame = self.height() - self.viewport().height()  # Border and padding from the style sheet.
+        text = lines * self.fontMetrics().lineSpacing() + 2 * self.document().documentMargin()
+        self.setFixedHeight(int(text + frame))
+        self.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded if self.lines() > INPUT_MAX_LINES else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.fit()  # A new width wraps the text differently.
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == event.Type.StyleChange:
+            self.fit()  # The style sheet sets the padding and font.
+
+    def keyPressEvent(self, event) -> None:
+        enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        if enter and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.submitted.emit()
+            return
+        super().keyPressEvent(event)
 
 
 class ChatWindow(QWidget):
@@ -153,6 +219,14 @@ class ChatWindow(QWidget):
         self._type_timer = QTimer(self)
         self._type_timer.setInterval(TYPE_INTERVAL_MS)
         self._type_timer.timeout.connect(self._type_step)
+        self._last_typed_at = time.monotonic()  # When the typewriter last showed a new character.
+
+        # The "..." while Alter Ego thinks, so a pause never looks like the app froze.
+        self._dots_phase = 0
+        self._dots_shown = False
+        self._dots_timer = QTimer(self)
+        self._dots_timer.setInterval(DOTS_INTERVAL_MS)
+        self._dots_timer.timeout.connect(self._dots_step)
 
         self._build_ui()
 
@@ -160,6 +234,7 @@ class ChatWindow(QWidget):
         self._conversation.message_updated.connect(self._on_message_updated)
         self._conversation.cleared.connect(self._on_cleared)
         assistant.state_changed.connect(lambda _state: self._update_input_state())
+        assistant.thought_changed.connect(lambda _thought: self._render() if self._waiting() or self._dots_shown else None)
         assistant.status.connect(lambda text: self._set_status("assistant", text))  # "Starting Ollama...", "Downloading the AI model... 43%"
         if push_to_talk is not None:
             push_to_talk.state_changed.connect(self._on_listening_changed)
@@ -217,9 +292,10 @@ class ChatWindow(QWidget):
 
         input_row = QHBoxLayout()
         input_row.setSpacing(6)
-        self._input = QLineEdit()
+        input_row.setAlignment(Qt.AlignmentFlag.AlignBottom)  # The buttons stay at the bottom as the box grows.
+        self._input = ChatInput()
         self._input.setPlaceholderText("Say something...")
-        self._input.returnPressed.connect(self._send)
+        self._input.submitted.connect(self._send)
         input_row.addWidget(self._input, stretch=1)
 
         # Hold to talk. pressed/released (not clicked) so the recording lasts as long as the hold.
@@ -230,16 +306,42 @@ class ChatWindow(QWidget):
         self._talk_button.released.connect(self._talk_released)
         input_row.addWidget(self._talk_button)
 
+        # "send", or "stop" while Alter Ego thinks, types or speaks (see _update_input_state).
         self._send_button = QPushButton("send")
-        self._send_button.clicked.connect(self._send)
+        self._send_button.clicked.connect(self._send_or_stop)
         input_row.addWidget(self._send_button)
         root.addLayout(input_row)
 
     # ----- Sending -----
 
     def _send(self) -> None:
+        if self._is_busy():
+            return  # Typed while Alter Ego answers: the text waits in the box until it's done or stopped.
         if self._assistant.send(self._input.text()):
             self._input.clear()
+
+    def _send_or_stop(self) -> None:
+        if self._is_busy():
+            self.stop_reply()
+        else:
+            self._send()
+
+    def stop_reply(self) -> None:
+        """Stop thinking, typing and speaking at once, so the user can talk again."""
+        self._assistant.stop()
+        if self._speaker is not None:
+            self._speaker.stop()
+        message = self._typing_message
+        if message is not None:
+            # Show what had arrived, and finish the typewriter as if it had typed it all.
+            self._type_timer.stop()
+            self._typing_message = None
+            self._pace_target = None
+            self._typed_chars = len(message.text)
+            self.typing_finished.emit()
+        self._render()
+        self._update_input_state()
+        self._input.setFocus()
 
     def _clear(self) -> None:
         self._assistant.cancel()
@@ -250,8 +352,12 @@ class ChatWindow(QWidget):
 
     def _update_input_state(self) -> None:
         busy = self._is_busy()
-        self._input.setEnabled(not busy)
-        self._send_button.setEnabled(not busy)
+        # The box stays usable, so the next message can be written while Alter Ego answers.
+        self._send_button.setText("stop" if busy else "send")
+        self._send_button.setToolTip(f"Stop {self._name} and talk again" if busy else "")
+        self._send_button.setProperty("stopping", busy)
+        self._send_button.style().unpolish(self._send_button)  # Re-read the style sheet for "stopping".
+        self._send_button.style().polish(self._send_button)
         if self._voice_status:
             self._input.setPlaceholderText(self._voice_status)
         elif self._assistant.state is AssistantState.THINKING:
@@ -262,6 +368,7 @@ class ChatWindow(QWidget):
             self._input.setPlaceholderText("Say something...")
             if self.isVisible():
                 self._input.setFocus()
+        self._update_dots()
 
     # ----- Voice -----
 
@@ -302,7 +409,6 @@ class ChatWindow(QWidget):
         if self.review_before_sending or not self._assistant.send(text):
             self._input.setText(text)
             self._input.setFocus()
-            self._input.end(False)
 
     def _say(self, text: str, expression: Expression) -> None:
         """Have Alter Ego report something (an error, a result) in the chat, in character."""
@@ -335,6 +441,7 @@ class ChatWindow(QWidget):
         self._typed_chars = 0
         self._typed_progress = 0.0
         self._type_rate = TYPE_CHARS_PER_TICK
+        self._last_typed_at = time.monotonic()
         # With a voice, wait for the first sentence to start playing before showing anything.
         self._pace_target = 0 if self._spoken(message) else None
         self._type_timer.start()
@@ -363,6 +470,7 @@ class ChatWindow(QWidget):
             typed = int(self._typed_progress)
             if typed != self._typed_chars:  # A slow voice can advance less than one character per tick.
                 self._typed_chars = typed
+                self._last_typed_at = time.monotonic()
                 self._render()
         elif message.complete and self._typed_chars >= len(message.text) and not self._spoken(message):
             self._type_timer.stop()
@@ -393,6 +501,50 @@ class ChatWindow(QWidget):
         self._pace_target = None
         self._type_rate = TYPE_CHARS_PER_TICK * 4 if not message.complete else max(TYPE_CHARS_PER_TICK, len(message.text) - self._typed_chars)
 
+    # ----- The thinking dots -----
+
+    def _update_dots(self) -> None:
+        """Run the dots timer only while a reply is on its way and the panel is on screen."""
+        if self.isVisible() and self._is_busy():
+            if not self._dots_timer.isActive():
+                self._dots_timer.start()
+                if self._waiting():
+                    self._render()  # Show the dots now, not one tick later.
+        else:
+            self._dots_timer.stop()
+            if self._dots_shown:
+                self._render()
+
+    def _dots_step(self) -> None:
+        self._dots_phase = (self._dots_phase + 1) % 3
+        if self._dots_shown or self._waiting():
+            self._render()
+
+    def _dots(self) -> str:
+        return "." * (self._dots_phase + 1)
+
+    def _stalled(self, message: Message) -> bool:
+        """Mid-reply, all the words so far are typed and no more have come for a while."""
+        return (not message.complete and self._typed_chars >= len(message.text)
+                and time.monotonic() - self._last_typed_at >= STALL_S)
+
+    def _waiting(self) -> bool:
+        """Should the dots be on screen right now?"""
+        message = self._typing_message
+        if message is not None:
+            return self._typed_chars == 0 or self._stalled(message)
+        return self._assistant.state is AssistantState.THINKING
+
+    def _format_pending(self) -> str:
+        """The line shown before any words, saying what Alter Ego is doing: "ALTER EGO > thinking...",
+        "thinking some more...", "searching the web..." (Assistant.thought)."""
+        words = self._assistant.thought or "thinking"
+        return (
+            f'<p style="margin:0 0 8px 0;">'
+            f'<span style="color:#baff85; font-weight:bold;">{html.escape(self._name.upper())} &gt;</span> '
+            f'<span style="color:#6f9a5a;">{html.escape(words)}{self._dots()}</span></p>'
+        )
+
     def _render(self) -> None:
         """Rebuild the whole history as HTML.
 
@@ -406,15 +558,29 @@ class ChatWindow(QWidget):
         previous_day: date | None = None
 
         parts = []
+        dots_shown = False
         for message in messages:
             day = message.timestamp.date()
             if show_days and day != previous_day:
                 previous_day = day
                 parts.append(self._format_divider(day_label(day)))
             text = message.text
+            if message is self._typing_message and self._typed_chars == 0 and self._is_busy():
+                parts.append(self._format_pending())  # Nothing typed yet (waiting for the voice): the dots.
+                dots_shown = True
+                continue
             if message is self._typing_message or not message.complete:
-                text = text[: self._typed_chars] + "▌"  # left half block = cursor
+                tail = ""
+                if message is self._typing_message and self._stalled(message):
+                    doing = self._assistant.thought  # Mid-reply, a tool at work: "(searching the web...)".
+                    tail = f" ({doing}{self._dots()})" if doing else f" {self._dots()}"
+                    dots_shown = True
+                text = text[: self._typed_chars] + tail + "▌"  # left half block = cursor
             parts.append(self._format_message(message, text))
+        if self._typing_message is None and self._assistant.state is AssistantState.THINKING:
+            parts.append(self._format_pending())
+            dots_shown = True
+        self._dots_shown = dots_shown
 
         # Follow the newest text only while the user is at the bottom: someone who scrolled up to
         # read keeps their place (rebuilding the document used to throw them back down every tick).
@@ -473,6 +639,18 @@ class ChatWindow(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._input.setFocus()
+        self._update_dots()
+        # Open at the newest message, not the top of a long remembered history. After this event, once
+        # the layout has its real size: before that the scroll range is not known yet.
+        QTimer.singleShot(0, self.scroll_to_latest)
+
+    def scroll_to_latest(self) -> None:
+        bar = self._view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._dots_timer.stop()  # Nothing to animate off screen.
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:

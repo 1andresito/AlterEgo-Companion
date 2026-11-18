@@ -31,6 +31,11 @@ class Provider(ABC):
         """Can the model use Alter Ego's file tools right now? The prompt then says how (core/tools.py)."""
         return False
 
+    @property
+    def web_tools(self) -> bool:
+        """Can the model go online right now (AI -> Allow internet)? The prompt then says so (core/tools.py)."""
+        return False
+
     @abstractmethod
     def describe(self) -> str:
         """One line saying where this provider points, e.g. 'Ollama at http://...'."""

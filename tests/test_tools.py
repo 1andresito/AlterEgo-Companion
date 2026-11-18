@@ -31,7 +31,7 @@ from alter_ego.core.conversation import Message, Role  # noqa: E402
 from alter_ego.core.personality import Personality  # noqa: E402
 from alter_ego.core.tools import (  # noqa: E402
     CREATE, DENIED_MESSAGE, FILES_INSTRUCTION, MAKE_FOLDER, MAX_RESULT_CHARS, READ, READ_DENIED_MESSAGE, REPLACE, Access, ToolBox,
-    page_text, parse_wikipedia, system_folders,
+    page_text, parse_wikipedia, system_folders, tool_result_message, wants_web,
 )
 from alter_ego.providers import build_toolbox, create_provider  # noqa: E402
 import alter_ego.providers.ollama_server  # noqa: E402
@@ -81,6 +81,14 @@ class FileToolTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_questions_about_the_world_offer_the_web_but_small_talk_does_not(self):
+        for text in ["Can you tell me todays news?", "who won the election?", "what is a black hole?",
+                     "whats the capital of Peru", "how tall is the Eiffel Tower?", "tell me about Peru"]:
+            self.assertTrue(wants_web(text), text)
+        for text in ["hello", "how are you?", "what do you like?", "what's your name?", "whats up",
+                     "who are you?", "tell me about yourself", "where is my phone?"]:
+            self.assertFalse(wants_web(text), text)
 
     def test_every_change_is_asked_about(self):
         result = self.tools.run("write_file", {"path": "notes/hi.txt", "content": "hello"})
@@ -186,7 +194,94 @@ class WebToolTests(unittest.TestCase):
         self.assertIn("Capital of Japan.", result)
         self.assertIn("https://en.wikipedia.org/wiki/Tokyo_Tower", result)
         self.assertIn("A tower & landmark", result)
-        self.assertEqual(len(requested), 2)
+        self.assertEqual(len(requested), 3)  # the instant answer, the search, the top pages' openings
+
+    def test_top_results_carry_their_opening_paragraph(self):
+        def fetch(url: str, data: bytes | None) -> str:
+            if "duckduckgo" in url:
+                return "{}"
+            if "prop=extracts" in url:
+                return json.dumps({"query": {"pages": [
+                    {"title": "2026 FIFA World Cup", "extract": "It ended on July 19 with Spain winning."}]}})
+            return json.dumps({"query": {"search": [{"title": "2026 FIFA World Cup", "snippet": "The 23rd World Cup"}]}})
+
+        result = ToolBox(internet=True, files=False, fetch=fetch).run("web_search", {"query": "2026 world cup winner"})
+        self.assertIn("Spain winning", result)
+
+    def test_news_comes_from_the_current_events_pages(self):
+        day_page = (
+            "{{Current events|year=2026}}\n<!-- All news items below this line -->\n"
+            "\'\'\'Armed conflicts and attacks\'\'\'\n*[[Some war]]\n"
+            "**A [[ceasefire]] is agreed in [[Ruritania|the Kingdom]]. [https://apnews.com/x (AP)]\n"
+            "\'\'\'Sports\'\'\'\n*[[Spain national team|Spain]] wins the cup. [https://bbc.com/y (BBC)]\n"
+        )
+        requested: list[str] = []
+
+        def fetch(url: str, data: bytes | None) -> str:
+            requested.append(url)
+            return json.dumps({"parse": {"wikitext": day_page}})
+
+        tools = ToolBox(internet=True, files=False, fetch=fetch)
+        news = tools.run("web_search", {"query": "news today"})
+        self.assertIn("Current events", news)
+        self.assertIn("- Armed conflicts and attacks: A ceasefire is agreed in the Kingdom. (AP)", news)
+        self.assertIn("- Sports: Spain wins the cup. (BBC)", news)
+        self.assertNotIn("Some war", news)  # only the items that cite a source, not the story names
+        self.assertEqual(len(requested), 1)  # today's page was enough
+        self.assertIn("Portal%3ACurrent+events", requested[0])
+        about = tools.run("web_search", {"query": "latest news about Spain"})
+        self.assertIn("Spain wins the cup", about)
+        self.assertNotIn("ceasefire", about)
+
+    def test_weather_comes_from_wttr_in(self):
+        weather = {
+            "current_condition": [{"temp_C": "29", "temp_F": "84", "FeelsLikeC": "31", "humidity": "58",
+                                   "windspeedKmph": "15", "weatherDesc": [{"value": "Partly Cloudy"}]}],
+            "nearest_area": [{"areaName": [{"value": "Lima"}], "country": [{"value": "Peru"}]}],
+            "weather": [{"date": "2026-11-18", "mintempC": "23", "maxtempC": "29",
+                         "hourly": [{"weatherDesc": [{"value": "Sunny"}]}] * 8}],
+        }
+        requested: list[str] = []
+
+        def fetch(url: str, data: bytes | None) -> str:
+            requested.append(url)
+            return json.dumps(weather)
+
+        result = ToolBox(internet=True, files=False, fetch=fetch).run(
+            "web_search", {"query": "what's the weather like in Lima today?"})
+        self.assertEqual(requested, ["https://wttr.in/Lima?format=j1"])
+        self.assertIn("Weather for Lima, Peru", result)
+        self.assertIn("29°C (84°F)", result)
+        self.assertIn("2026-11-18: 23 to 29°C, Sunny", result)
+
+    def test_arguments_wrapped_in_the_call_shape_are_unwrapped(self):
+        asked: list[str] = []
+
+        def fetch(url: str, data: bytes | None) -> str:
+            asked.append(url)
+            return json.dumps({"query": {"search": []}})
+
+        tools = ToolBox(internet=True, files=False, fetch=fetch)
+        wrapped = {"type": "function", "function": "web_search", "parameters": {"query": "tokyo tower"}}
+        self.assertNotIn("no search words", tools.run("web_search", wrapped))
+        self.assertTrue(any("tokyo+tower" in url for url in asked), asked)
+
+    def test_web_results_tell_the_model_to_answer_from_them(self):
+        framed = tool_result_message("web_search", "Weather for Lima: 29°C")
+        self.assertIn("Weather for Lima: 29°C", framed)
+        self.assertIn("Answer the user's question from these results", framed)
+        self.assertEqual(tool_result_message("web_search", "Error: down"), "Error: down")
+        self.assertEqual(tool_result_message("read_file", "file text"), "file text")
+
+    def test_news_or_weather_that_cannot_be_reached_falls_back_to_the_search(self):
+        def fetch(url: str, data: bytes | None) -> str:
+            if "wttr.in" in url or "action=parse" in url:
+                raise OSError("down")
+            return json.dumps({"query": {"search": [{"title": "Lima", "snippet": "Capital of Peru"}]}})
+
+        tools = ToolBox(internet=True, files=False, fetch=fetch)
+        self.assertIn("Capital of Peru", tools.run("web_search", {"query": "Lima weather"}))
+        self.assertIn("Capital of Peru", tools.run("web_search", {"query": "Lima news"}))
 
     def test_searxng_server_is_used_when_set(self):
         def fetch(url: str, data: bytes | None) -> str:
@@ -243,6 +338,10 @@ class ToolOllamaHandler(BaseHTTPRequestHandler):
             written = json.dumps({"name": "read_file", "parameters": {"path": "talent.txt"}})
             lines = [{"message": {"role": "assistant", "content": "Sure! Let me check. " + written[:20]}, "done": False},
                      {"message": {"role": "assistant", "content": written[20:]}, "done": True}]
+        elif request.get("model") == "openaiish" and request.get("tools") and not tool_messages:
+            written = json.dumps({"type": "function", "function": {"name": "read_file", "parameters": {"path": "x.txt"}}})
+            lines = [{"message": {"role": "assistant", "content": written[:30]}, "done": False},
+                     {"message": {"role": "assistant", "content": written[30:]}, "done": True}]
         elif request.get("model") == "talky":
             asked_for_words = request["messages"][-1]["role"] == "system"
             content = "[happy] Hello there!" if asked_for_words else '[talk] {"name": "talk", "parameters": {}}'
@@ -306,6 +405,12 @@ class OllamaToolTests(unittest.TestCase):
         self.assertNotIn("{", text)
         self.assertEqual(ToolOllamaHandler.requests[1]["messages"][-1]["tool_name"], "read_file")
 
+    def test_a_call_written_in_openai_shape_is_run_and_not_shown(self):
+        provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
+        text = "".join(provider.stream_reply([ChatMessage("user", "read the file x.txt")], "openaiish", lambda: False))
+        self.assertTrue(text.startswith("Done: There is no file"), text)
+        self.assertEqual(ToolOllamaHandler.requests[1]["messages"][-1]["tool_name"], "read_file")
+
     def test_a_call_naming_no_tool_is_dropped_and_the_model_answers_in_words(self):
         provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
         text = "".join(provider.stream_reply([ChatMessage("user", "hello")], "talky", lambda: False))
@@ -334,7 +439,8 @@ class OllamaToolTests(unittest.TestCase):
         self.assertTrue(text.startswith("[happy] Okay! Done: Error: working with files is switched off"), text)
 
     def test_tools_are_offered_only_when_the_message_is_about_them(self):
-        provider = OllamaProvider(self.base_url, auto_start=False, tools=ToolBox(internet=True, files=True))
+        story = Personality.load(PROJECT_ROOT / "assets" / "personality" / "alter_ego.json").knowledge.mentions
+        provider = OllamaProvider(self.base_url, auto_start=False, tools=ToolBox(internet=True, files=True, story=story))
         offered = []
         for text in ("hello", "Who is Mondo?", "what's the weather today?", "save this in notes.txt"):
             "".join(provider.stream_reply([ChatMessage("user", text)], "plain", lambda: False))

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ from alter_ego.core.assistant import (  # noqa: E402
     with_tag,
 )
 from alter_ego.core.conversation import Conversation, Message, Role  # noqa: E402
+from alter_ego.core.tools import WrittenCallFilter  # noqa: E402
 from alter_ego.core.knowledge import Knowledge  # noqa: E402
 from alter_ego.core.personality import Personality  # noqa: E402
 from alter_ego.expressions import Expression  # noqa: E402
@@ -89,6 +91,8 @@ class FakeResponder:
 class FakeProvider(Provider):
     id = "fake"
     label = "Fake"
+
+    web_tools = False  # A plain attribute, so a test can switch it on.
 
     def __init__(self, models=("model-a", "model-b")):
         self.models = list(models)
@@ -240,6 +244,19 @@ class CleanReplyTests(unittest.TestCase):
         self.assertEqual(clean_reply(leaked, final=True), "Let me see. Hmm.")
         self.assertEqual(clean_reply('{"name":"talk", "parameters":{}}', final=True), "")
         self.assertEqual(clean_reply('Okay! {"name": "read_f', final=False), "Okay! ")  # half-streamed: hidden
+        openai_shape = '{"type":"function","function":{"name":"web_search","parameters":{"query":"news"}}}'
+        self.assertEqual(clean_reply("Let me look! " + openai_shape, final=True), "Let me look!")
+        self.assertEqual(clean_reply('{"type":"function","function":', final=True), "")  # cut off: still hidden
+        self.assertEqual(clean_reply('{"type":"function","function":', final=False), "")
+        self.assertEqual(clean_reply('A {"type": "cat"} stays.', final=True), 'A {"type": "cat"} stays.')
+        extra_brace = '{"type":"function","function":{"name":"web_search","parameters":{}}}}\n\n" Oh no, Master.'
+        self.assertEqual(clean_reply(extra_brace, final=True), "Oh no, Master.")
+        self.assertEqual(clean_reply('Hmm. {"name":"x","parameters":{}}}} Okay.', final=True), "Hmm. Okay.")
+
+    def test_leftovers_of_a_call_are_dropped_across_streamed_pieces(self):
+        calls = WrittenCallFilter()
+        pieces = ['{"name":"x","parameters":{}}', "}", '\n"', " Oh no."]
+        self.assertEqual("".join(calls.feed(piece) for piece in pieces) + calls.flush(), " Oh no.")
         self.assertEqual(clean_reply("Sets like {1, 2} and {braces} stay.", final=True), "Sets like {1, 2} and {braces} stay.")
 
 
@@ -331,6 +348,34 @@ class ProviderResponderTests(unittest.TestCase):
         self.assertIn("Biker Gang", ask("Who is Mondo?", "and what happened to him after?"))  # a follow-up keeps it
         self.assertLess(len(ask("Mondo Celeste Kyoko Makoto Junko Byakuya")), 6000)  # at most a few topics
 
+    def test_everyday_chat_brings_in_no_story(self):
+        responder, provider = self.make("model-a")
+        personality = Personality.load(PERSONALITY_FILE)
+        ask = lambda text: responder.build_messages(personality, [Message(Role.USER, text)])[0].content
+        everyday = ["hello", "how are you?", "Alter Ego, what's your favourite colour?", "I'm a programmer",
+                    "I want to get strong at the gym", "I hope my school day goes well", "I feel lucky today",
+                    "tell me about yourself", "what happens in the end of my book?"]
+        for text in everyday:
+            self.assertNotIn("What you remember about this", ask(text), text)
+        for text in ["hi", "tell me about yourself"]:
+            self.assertNotIn("Monokuma", ask(text), text)  # the killing game is not in the always-on part
+        self.assertIn("Monokuma", ask("Can you tell me about Danganronpa?"))
+        self.assertIn("Monokuma", ask("what was the killing game like?"))
+
+    def test_the_prompt_says_the_internet_is_there_when_a_question_needs_it(self):
+        responder, provider = self.make("model-a")
+        personality = Personality.load(PERSONALITY_FILE)
+        ask = lambda text: responder.build_messages(personality, [Message(Role.USER, text)])[0].content
+        self.assertIn("can't go on the internet", ask("Can you tell me todays news?"))  # FakeProvider has no web tools...
+        provider.web_tools = True  # ...until it has.
+        news = ask("Can you tell me todays news?")
+        self.assertIn("web_search", news)
+        self.assertIn(f"{date.today():%Y}", news)  # with today's date
+        self.assertNotIn("internet", ask("how are you?"))  # small talk: no tools, no instruction
+        self.assertNotIn("internet", ask("Who is Mondo?"))  # the story is answered from memory, not the web
+        provider.web_tools = False
+        self.assertIn("Allow internet", ask("what's the weather in Lima?"))
+
 
 class KnowledgeTests(unittest.TestCase):
     def write(self, data: str) -> Path:
@@ -366,6 +411,8 @@ class KnowledgeTests(unittest.TestCase):
         knowledge = Personality.load(PERSONALITY_FILE).knowledge
         self.assertGreaterEqual(len(knowledge.topics), 8)
         self.assertIn("Master", knowledge.core)
+        for story in ("Monokuma", "killing game", "trial"):
+            self.assertNotIn(story, knowledge.core)  # the story comes up only when asked
 
 
 class AssistantTests(unittest.TestCase):
@@ -398,6 +445,58 @@ class AssistantTests(unittest.TestCase):
         text, history = responder.calls[0]
         self.assertEqual(text, "what is 5+7?")
         self.assertEqual([m.role for m in history], [Role.USER])
+
+    def test_stop_keeps_the_words_so_far_and_frees_the_assistant_at_once(self):
+        class Slow(FakeResponder):
+            def stream_reply(self, text, personality, history, cancelled, progress=None):
+                yield "[shy] Let me think"
+                while not cancelled():  # A model or web request that takes its time.
+                    time.sleep(0.01)
+                yield " and never seen."
+
+        conversation = Conversation()
+        assistant = Assistant(Personality.default(), conversation, Slow(""))
+        assistant.send("tell me something")
+        self.assertTrue(process_events_until(lambda: assistant.state is AssistantState.REPLYING))
+        started = time.monotonic()
+        assistant.stop()
+        self.assertLess(time.monotonic() - started, 0.5)  # never waits for the worker
+        self.assertIs(assistant.state, AssistantState.IDLE)
+        reply = conversation.messages[-1]
+        self.assertEqual(reply.text, "Let me think")
+        self.assertTrue(reply.complete)
+        self.assertTrue(assistant.send("next one"))  # free to talk again right away
+        assistant.stop()
+        time.sleep(0.2)
+        QCoreApplication.processEvents()
+        self.assertNotIn("never seen", " ".join(m.text for m in conversation.messages))
+
+    def test_thoughts_follow_what_happens_during_a_reply(self):
+        class Searching(FakeResponder):
+            def stream_reply(self, text, personality, history, cancelled, progress=None):
+                progress("Searching the web...")
+                progress("")
+                yield "[happy] Found it!"
+
+        assistant = Assistant(Personality.default(), Conversation(), Searching(""))
+        thoughts: list[str] = []
+        assistant.thought_changed.connect(thoughts.append)
+        assistant.send("what's the news?")
+        self.run_until_idle(assistant)
+        self.assertEqual(thoughts, ["thinking", "fake preparing", "thinking", "searching the web",
+                                    "looking at what I found", ""])  # getting ready counts as a thought too
+
+    def test_stop_before_any_words_adds_nothing(self):
+        conversation = Conversation()
+        assistant = Assistant(Personality.default(), conversation, FakeResponder("[happy] hi"))
+        assistant.stop()  # nothing running: harmless
+        assistant.send("hello")
+        assistant.stop()
+        self.assertIs(assistant.state, AssistantState.IDLE)
+        self.assertEqual([m.role for m in conversation.messages], [Role.USER])
+        time.sleep(0.2)
+        QCoreApplication.processEvents()
+        self.assertEqual(len(conversation), 1)  # the stopped worker's words never arrive
 
     def test_stage_directions_are_stripped_from_streamed_reply(self):
         conversation = Conversation()

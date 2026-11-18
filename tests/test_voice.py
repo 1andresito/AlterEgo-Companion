@@ -195,6 +195,12 @@ class KokoroTests(unittest.TestCase):
                 engine.synthesize("hello")
             self.assertIn("Download my voice", str(caught.exception))
 
+    def test_text_with_nothing_to_say_is_silence_not_an_error(self):
+        engine = KokoroSynthesizer("alter_ego")
+        engine._load = lambda: self.fail("Kokoro must not be asked to say a lone symbol")
+        for text in ["}", " ... ", '"}]', ""]:
+            self.assertEqual(len(engine.synthesize(text).samples), 0, text)
+
     def test_voices_and_languages(self):
         self.assertIn(PRESET_VOICE, VOICES)
         self.assertEqual(voice_language("alter_ego"), "en-us")
