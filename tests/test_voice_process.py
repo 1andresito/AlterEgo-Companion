@@ -223,6 +223,22 @@ class GpuPackTests(unittest.TestCase):
         """), encoding="utf-8")
         result = gpu_pack._probe(site)
         self.assertEqual((result.get("cuda"), result.get("name")), (True, "Pretend GPU"), result)
+        # The same folder spelled the short Windows way (C:\Users\RUNNER~1 on the build machines) is the same pack.
+        short = short_path(site)
+        if short != str(site):
+            result = gpu_pack._probe(Path(short))
+            self.assertEqual(result.get("cuda"), True, result)
+
+
+def short_path(path: Path) -> str:
+    """The 8.3 spelling of a folder on Windows (when the drive keeps one), else the path as it is."""
+    if sys.platform != "win32":
+        return str(path)
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(1024)
+    length = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer))
+    return buffer.value if 0 < length < len(buffer) else str(path)
 
 
 if __name__ == "__main__":

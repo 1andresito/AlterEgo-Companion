@@ -274,7 +274,7 @@ def _probe(site: Path) -> dict:
         except json.JSONDecodeError:
             continue
         if isinstance(result, dict):
-            if result.get("cuda") and str(site.resolve()).lower() not in str(result.get("file", "")).lower():
+            if result.get("cuda") and not _inside(Path(str(result.get("file", ""))), site):
                 return {"cuda": False, "error": "the bundled PyTorch was used instead of the pack"}
             return result
     return {"cuda": False, "error": "no answer from the check"}
@@ -282,6 +282,16 @@ def _probe(site: Path) -> dict:
 
 def _gb(size: float) -> str:
     return f"{size / 1024 ** 3:.1f} GB"
+
+
+def _inside(file: Path, folder: Path) -> bool:
+    """Is `file` in `folder`? Compared as real paths: Windows may spell the same folder two ways
+    (C:\\Users\\RUNNER~1 and C:\\Users\\runneradmin), so comparing the text is not enough."""
+    try:
+        file, folder = file.resolve(), folder.resolve()
+    except OSError:
+        return False
+    return folder in file.parents
 
 
 # ----- Using it (in the voice helper, before PyTorch is imported) -----

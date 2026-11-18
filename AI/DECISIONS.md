@@ -36,6 +36,8 @@ Choices that look strange, or easy to "improve", until you know why they were ma
 
 **A loading window at start-up.** The character appears once the AI model and the voice are ready (or after 90 s at most), so the first message doesn't wait unseen. It shows the steps and adds no memory.
 
+**The uninstaller asks what else should go, with nothing ticked.** Updates install over the old version and never run the uninstaller, so the question only appears on a real uninstall. Memories, downloads (the voice files, the GPU pack), Alter Ego's own speech models (only `models--Systran--faster-whisper-*`, never the rest of the shared Hugging Face cache), the files in `Documents\Alter Ego`, Ollama's models and Ollama itself are separate choices, plus "Everything above". Deleting memories, saved files or Ollama's models asks once more, because it can't be undone. A silent uninstall (`/VERYSILENT`) removes only the program. Ollama is removed with its own uninstaller; on Linux it needs root, so the script only says how.
+
 **Hands-free waits for the wake phrase every time.** After a reply, Alter Ego does not keep listening for a follow-up. Every request starts with "Hey Alter Ego". Talking over a reply is a separate opt-in (`interrupt_by_voice`), and only for replies to hands-free requests, because with speakers Alter Ego can hear itself.
 
 **The stammer is written, not spoken.** "I-I think" appears in the chat but is spoken as "I think" (`voice/text.speakable`). Read aloud, it sounded like a stutter of letters.

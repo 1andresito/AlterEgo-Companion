@@ -8,7 +8,7 @@ Inspired by the digital character Alter Ego from Danganronpa. Built with Python 
 
 > This is an unofficial, non-commercial fan project. It is not affiliated with or endorsed by Spike Chunsoft or the Danganronpa franchise.
 
-**Current version: v0.9.0** ([what's new](CHANGELOG.md))
+**Current version: v0.9.1** ([what's new](CHANGELOG.md))
 
 ---
 
@@ -33,7 +33,7 @@ cd AlterEgo-v*-linux-x86_64
 ./install.sh
 ```
 
-Alter Ego then appears in your applications menu (and as the `alter-ego` command). `./uninstall.sh` removes it again. Or skip installing and just run `AlterEgo/AlterEgo`.
+Alter Ego then appears in your applications menu (and as the `alter-ego` command). `./uninstall.sh` removes it again, and asks what else should go. Or skip installing and just run `AlterEgo/AlterEgo`.
 
 ### The first start
 
@@ -133,7 +133,16 @@ Alter Ego is local-first. Here is everything that can leave your computer, and w
   - `claude_code/`: what Claude Code needs to resume its session.
 - **Your documents.** With **Let me work with files** on, the AI changes a file only after you said yes to that change (unless you switched on **Edit files without asking**). It reads `Documents\Alter Ego` freely, and anywhere else only after you said yes. With Claude or an online AI, what it reads is sent to that service.
 
-Uninstalling Alter Ego keeps this data folder, so your memories survive an update. Delete the folder if you want them gone.
+**Uninstalling.** Updates keep this folder, so your memories survive them. When you uninstall, Alter Ego asks what else should go, with nothing ticked:
+- your memories and settings
+- the voice files and the GPU pack
+- the speech-recognition models
+- the files it saved for you in `Documents\Alter Ego`
+- Ollama's AI models (they are shared by every program that uses Ollama)
+- the Ollama program itself (Windows; on Linux the uninstaller says how)
+- **Everything above**
+
+Anything you don't tick stays, so you can reinstall later and carry on. On Linux, run `./uninstall.sh` in a terminal to be asked.
 
 ---
 

@@ -2,6 +2,11 @@
 
 What changed in each version, newest first. The release page on GitHub shows the section for that version.
 
+## v0.9.1: Uninstall asks what to keep
+
+- **Uninstalling asks what else should go.** A window lists your memories and settings, the voice files and GPU pack, the speech-recognition models, the files Alter Ego saved for you, Ollama's AI models and Ollama itself, each with its size, plus **Everything above**. Nothing is ticked, so a plain uninstall keeps your memories for a later reinstall. On Linux, `./uninstall.sh` asks the same questions in the terminal.
+- **Fix:** a release-build test of the GPU pack check failed on machines whose Windows user folder has a short name (such as `RUNNER~1`). The check now compares real folder paths.
+
 ## v0.9.0: Lighter, steadier, and your GPU for the voice
 
 - **Much less memory.** Alter Ego's voice now runs in a separate helper process. Alter Ego itself uses about 200–300 MB instead of 2–4 GB. On computers with less than 16 GB of memory, the voice is closed after 10 quiet minutes and its memory goes back to your computer; it loads again when it next speaks. On bigger computers it stays loaded so replies stay quick, and it is restarted if it ever grows past 3.5 GB.
