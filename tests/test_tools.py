@@ -26,7 +26,12 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from PySide6.QtCore import QCoreApplication  # noqa: E402
 
 from alter_ego.app import EngineCache  # noqa: E402
-from alter_ego.core.tools import DENIED_MESSAGE, MAX_RESULT_CHARS, ToolBox, page_text, parse_wikipedia  # noqa: E402
+from alter_ego.core.assistant import ProviderResponder  # noqa: E402
+from alter_ego.core.personality import Personality  # noqa: E402
+from alter_ego.core.tools import (  # noqa: E402
+    CREATE, DENIED_MESSAGE, FILES_INSTRUCTION, MAKE_FOLDER, MAX_RESULT_CHARS, READ, READ_DENIED_MESSAGE, REPLACE, Access, ToolBox,
+    page_text, parse_wikipedia, system_folders,
+)
 from alter_ego.providers import build_toolbox, create_provider  # noqa: E402
 import alter_ego.providers.ollama_server  # noqa: E402
 
@@ -38,7 +43,7 @@ from alter_ego.providers.ollama import OllamaProvider  # noqa: E402
 from alter_ego.providers.ollama_server import OllamaServer  # noqa: E402
 from alter_ego.providers.tools_mcp import ApprovalServer, ask_app, handle  # noqa: E402
 from alter_ego.settings.config import Config  # noqa: E402
-from alter_ego.tool_approval import ToolApproval  # noqa: E402
+from alter_ego.tool_approval import ToolApproval, question_text  # noqa: E402
 
 FAKE_CLAUDE = [sys.executable, str(Path(__file__).resolve().parent / "fake_claude.py")]
 
@@ -61,27 +66,34 @@ def process_events_until(condition, timeout_s: float = 5.0) -> bool:
 class FileToolTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.folder = Path(self.temp.name) / "Alter Ego"
-        self.asked: list[Path] = []
+        self.root = Path(self.temp.name).resolve()
+        self.folder = self.root / "Alter Ego"
+        self.asked: list[Access] = []
         self.answer = True
 
-        def approve(folder: Path) -> bool:
-            self.asked.append(folder)
+        def approve(access: Access) -> bool:
+            self.asked.append(access)
             return self.answer
 
+        self.approve = approve
         self.tools = ToolBox(folder=self.folder, internet=False, files=True, approve=approve)
 
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_write_asks_once_then_writes_inside_the_folder(self):
+    def test_every_change_is_asked_about(self):
         result = self.tools.run("write_file", {"path": "notes/hi.txt", "content": "hello"})
-        self.assertIn("Saved notes/hi.txt", result)
-        self.assertEqual((self.folder / "notes" / "hi.txt").read_text(encoding="utf-8"), "hello")
+        target = self.folder / "notes" / "hi.txt"
+        self.assertIn(f"Saved {target}", result)
+        self.assertEqual(target.read_text(encoding="utf-8"), "hello")
+        self.tools.run("write_file", {"path": "notes/hi.txt", "content": "again"})
         self.tools.run("make_folder", {"path": "more"})
-        self.assertEqual(self.asked, [self.folder])  # asked once for the whole run
+        self.assertEqual([(a.kind, a.path) for a in self.asked], [
+            (CREATE, target), (REPLACE, target), (MAKE_FOLDER, self.folder / "more")])
+        self.assertEqual(self.asked[1].detail, "again")  # the question shows the new content
         self.assertIn("hi.txt", self.tools.run("list_files", {"path": "notes"}))
-        self.assertEqual(self.tools.run("read_file", {"path": "notes/hi.txt"}), "hello")
+        self.assertEqual(self.tools.run("read_file", {"path": "notes/hi.txt"}), "again")
+        self.assertEqual(len(self.asked), 3)  # reading in the Alter Ego folder is not asked about
 
     def test_no_means_nothing_is_written_and_not_asked_again_at_once(self):
         self.answer = False
@@ -90,13 +102,56 @@ class FileToolTests(unittest.TestCase):
         self.assertEqual(len(self.asked), 1)
         self.assertFalse((self.folder / "a.txt").exists())
 
-    def test_paths_outside_the_folder_are_refused(self):
-        outside = Path(self.temp.name) / "secret.txt"
-        outside.write_text("private", encoding="utf-8")
-        for path in ("../secret.txt", str(outside), "notes/../../secret.txt"):
-            self.assertTrue(self.tools.run("read_file", {"path": path}).startswith("Error:"), path)
-            self.assertTrue(self.tools.run("write_file", {"path": path, "content": "x"}).startswith("Error:"), path)
-        self.assertEqual(outside.read_text(encoding="utf-8"), "private")
+    def test_a_full_path_anywhere_works_after_a_yes(self):
+        outside = self.root / "elsewhere" / "note.txt"
+        self.assertIn("Saved", self.tools.run("write_file", {"path": str(outside), "content": "hi"}))
+        self.assertEqual(outside.read_text(encoding="utf-8"), "hi")
+        self.assertEqual(self.asked[-1].path, outside)
+        relative = self.tools.run("write_file", {"path": "../elsewhere/other.txt", "content": "x"})
+        self.assertIn("Saved", relative)
+        self.assertEqual(self.asked[-1].path, self.root / "elsewhere" / "other.txt")  # the real place is shown
+        if sys.platform == "win32":  # "C:notes.txt" is relative to a drive's current folder: refused, not guessed
+            self.assertTrue(self.tools.run("read_file", {"path": "C:notes.txt"}).startswith("Error:"))
+
+    def test_home_folders_are_reached_by_tilde_or_by_name(self):
+        home = self.root / "home"
+        (home / "Downloads").mkdir(parents=True)
+        with mock.patch.object(Path, "home", return_value=home), \
+                mock.patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
+            self.assertIn("Saved", self.tools.run("write_file", {"path": "~/Downloads/hello.txt", "content": "a"}))
+            self.assertIn("Saved", self.tools.run("write_file", {"path": "downloads/hi.txt", "content": "b"}))
+            self.tools.run("write_file", {"path": "Desktop/x.txt", "content": "c"})  # no such home folder here
+        self.assertEqual([a.path for a in self.asked], [
+            home / "Downloads" / "hello.txt", home / "Downloads" / "hi.txt", self.folder / "Desktop" / "x.txt"])
+
+    def test_reading_outside_the_folder_is_asked_once_per_folder(self):
+        secret = self.root / "private" / "secret.txt"
+        secret.parent.mkdir()
+        (secret.parent / "sub").mkdir()
+        secret.write_text("private", encoding="utf-8")
+        self.answer = False
+        self.assertEqual(self.tools.run("read_file", {"path": str(secret)}), READ_DENIED_MESSAGE)
+        self.assertEqual([(a.kind, a.path) for a in self.asked], [(READ, secret.parent)])
+        self.answer = True
+        self.tools._denied.clear()  # as if the short "no" memory had run out
+        self.assertEqual(self.tools.run("read_file", {"path": str(secret)}), "private")
+        self.assertIn("secret.txt", self.tools.run("list_files", {"path": str(secret.parent)}))
+        self.tools.run("list_files", {"path": str(secret.parent / "sub")})  # subfolders are covered
+        self.assertEqual(len(self.asked), 2)
+
+    def test_auto_edit_skips_the_question_but_not_for_protected_places_or_reads(self):
+        protected = self.root / "program"
+        tools = ToolBox(folder=self.folder, internet=False, files=True, approve=self.approve,
+                        auto_edit=True, protected=[protected])
+        self.assertIn("Saved", tools.run("write_file", {"path": str(self.root / "free.txt"), "content": "x"}))
+        self.assertEqual(self.asked, [])
+        self.answer = False
+        self.assertEqual(tools.run("write_file", {"path": str(protected / "settings.json"), "content": "x"}),
+                         DENIED_MESSAGE)
+        self.assertFalse((protected / "settings.json").exists())
+        self.assertEqual(tools.run("read_file", {"path": str(self.root / "free.txt")}), READ_DENIED_MESSAGE)
+        self.assertEqual([a.kind for a in self.asked], [CREATE, READ])
+        self.assertTrue(any(tools.is_protected(folder) for folder in system_folders()))
 
     def test_reading_is_capped_and_needs_no_approval(self):
         self.folder.mkdir(parents=True)
@@ -217,7 +272,8 @@ class OllamaToolTests(unittest.TestCase):
         provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
         progress: list[str] = []
         text = "".join(provider.stream_reply([ChatMessage("user", "make a file")], "m", lambda: False, progress.append))
-        self.assertTrue(text.startswith("[happy] Okay! Done: Saved hi.txt"), text)
+        saved = (Path(self.temp.name) / "hi.txt").resolve()
+        self.assertTrue(text.startswith(f"[happy] Okay! Done: Saved {saved}"), text)
         self.assertEqual((Path(self.temp.name) / "hi.txt").read_text(encoding="utf-8"), "hi")
         self.assertEqual(progress, ["Writing hi.txt...", ""])
         first, second = ToolOllamaHandler.requests
@@ -228,7 +284,7 @@ class OllamaToolTests(unittest.TestCase):
     def test_tool_call_written_as_json_text_is_run_not_shown(self):
         provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
         text = "".join(provider.stream_reply([ChatMessage("user", "make a file")], "texty", lambda: False))
-        self.assertEqual(text, "Done: Saved t.txt in the Alter Ego folder.")
+        self.assertEqual(text, f"Done: Saved {(Path(self.temp.name) / 't.txt').resolve()}.")
         self.assertEqual((Path(self.temp.name) / "t.txt").read_text(encoding="utf-8"), "typed")
 
     def test_ordinary_text_is_not_held_back(self):
@@ -253,7 +309,8 @@ class ClaudeToolTests(unittest.TestCase):
     def test_internet_and_files_flags(self):
         with tempfile.TemporaryDirectory() as temp:
             provider = ClaudeCodeProvider(command=FAKE_CLAUDE, working_dir=Path(temp) / "cc", internet=True,
-                                          files_folder=Path(temp) / "files", approval_address="1234:token")
+                                          files_folder=Path(temp) / "files", approval_address="1234:token",
+                                          protected=[Path(temp) / "a", Path(temp) / "b"])
             args = provider._reply_args("hi", "sys", "default", "id", False)
             self.assertEqual(args[args.index("--tools") + 1], "WebSearch,WebFetch")
             self.assertEqual(args[args.index("--max-turns") + 1], "8")
@@ -264,6 +321,9 @@ class ClaudeToolTests(unittest.TestCase):
             server = config["mcpServers"]["alter_ego"]
             self.assertIn("--tool-server", server["args"])
             self.assertEqual(server["env"]["ALTER_EGO_APPROVAL"], "1234:token")
+            self.assertEqual(server["env"]["ALTER_EGO_AUTO_EDIT"], "")  # off unless the user switched it on
+            self.assertEqual(server["env"]["ALTER_EGO_PROTECTED"].split(os.pathsep),
+                             [str(Path(temp) / "a"), str(Path(temp) / "b")])
             self.assertIn("--strict-mcp-config", args)
 
     def test_no_tools_is_a_pure_chat(self):
@@ -282,6 +342,19 @@ class ClaudeToolTests(unittest.TestCase):
         ollama = create_provider("ollama", config, approve=lambda _: True)
         self.assertEqual([s["function"]["name"] for s in ollama.tools.specs()][0], "list_files")
         self.assertFalse(build_toolbox(config).run("write_file", {"path": "x", "content": ""}).startswith("Saved"))
+        # The prompt tells the model it may write anywhere, but only while it really has the file tools.
+        self.assertTrue(ollama.file_tools)
+        prompt = ProviderResponder(ollama, config).build_messages(Personality.default(), [])[0].content
+        self.assertIn(FILES_INSTRUCTION, prompt)
+        self.assertTrue(create_provider("claude_code", config, approval_address="1:t").file_tools)
+        off = Config(Path("unused.json"), {"tools": {"internet": True, "files": False}})
+        off_provider = create_provider("ollama", off, approve=lambda _: True)
+        self.assertNotIn(FILES_INSTRUCTION, ProviderResponder(off_provider, off).build_messages(Personality.default(), [])[0].content)
+        self.assertFalse(build_toolbox(config).auto_edit)  # auto-edit is off unless switched on
+        self.assertFalse(create_provider("claude_code", config, approval_address="1:t")._auto_edit)
+        on = Config(Path("unused.json"), {"tools": {"files": True, "auto_edit": True}})
+        self.assertTrue(build_toolbox(on).auto_edit)
+        self.assertTrue(build_toolbox(on).is_protected(build_toolbox(on).protected[-1]))  # Alter Ego's own folders
 
 
 class ToolServerTests(unittest.TestCase):
@@ -295,12 +368,12 @@ class ToolServerTests(unittest.TestCase):
             self.assertIn("write_file", [tool["name"] for tool in listed])
             called = handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                              "params": {"name": "write_file", "arguments": {"path": "a.txt", "content": "z"}}}, tools)
-            self.assertIn("Saved a.txt", called["result"]["content"][0]["text"])
+            self.assertIn("a.txt", called["result"]["content"][0]["text"])
             self.assertIn("error", handle({"jsonrpc": "2.0", "id": 4, "method": "nope"}, tools))
 
     def test_server_process_asks_the_app_over_the_socket(self):
-        asked: list[Path] = []
-        server = ApprovalServer(lambda folder: asked.append(folder) or True)
+        asked: list[Access] = []
+        server = ApprovalServer(lambda access: asked.append(access) or True)
         try:
             with tempfile.TemporaryDirectory() as temp:
                 env = dict(os.environ, ALTER_EGO_APPROVAL=server.address, ALTER_EGO_FOLDER=temp)
@@ -316,35 +389,87 @@ class ToolServerTests(unittest.TestCase):
                 )
                 replies = [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
                 self.assertEqual([r["id"] for r in replies], [1, 2])
-                self.assertIn("Saved x.txt", replies[1]["result"]["content"][0]["text"])
+                self.assertIn("Saved", replies[1]["result"]["content"][0]["text"])
                 self.assertEqual((Path(temp) / "x.txt").read_text(encoding="utf-8"), "ok")
-                self.assertEqual(asked, [Path(temp)])
+                self.assertEqual([(a.kind, a.path, a.detail) for a in asked],
+                                 [(CREATE, (Path(temp) / "x.txt").resolve(), "ok")])
         finally:
             server.close()
 
     def test_wrong_token_or_no_app_means_no(self):
-        server = ApprovalServer(lambda folder: True)
+        server = ApprovalServer(lambda access: True)
         try:
-            self.assertTrue(ask_app(server.address, Path("f")))
-            self.assertFalse(ask_app(f"{server.port}:wrong", Path("f")))
+            self.assertTrue(ask_app(server.address, Access(CREATE, Path("f"))))
+            self.assertFalse(ask_app(f"{server.port}:wrong", Access(CREATE, Path("f"))))
+            self.assertFalse(ask_app(server.address, Access("format_disk", Path("f"))))  # unknown kind: no
         finally:
             server.close()
-        self.assertFalse(ask_app("1:nothing-listens", Path("f")))
+        self.assertFalse(ask_app("1:nothing-listens", Access(CREATE, Path("f"))))
+
+
+DIALOG_SCRIPT = """
+import sys
+from pathlib import Path
+from unittest import mock
+sys.path.insert(0, sys.argv[1])
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox
+from alter_ego.ai_menu import confirm_auto_edit
+from alter_ego.core.tools import REPLACE, Access
+from alter_ego.tool_approval import ToolApproval
+
+app = QApplication([])
+box = ToolApproval()._make_box(Access(REPLACE, Path("notes.txt"), "new"))
+print(f"on_top={bool(box.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)}")
+print(f"parent={box.parent()}")
+print(f"default={'No' if box.defaultButton() is box.button(QMessageBox.StandardButton.No) else 'other'}")
+print(f"detail={box.detailedText()}")
+
+def clicking(text):
+    def exec_(box):
+        next(b for b in box.buttons() if b.text().replace('&', '') == text).click()
+        return 0
+    return exec_
+
+with mock.patch.object(QMessageBox, "exec", clicking("Yes")):
+    print(f"yes={ToolApproval().ask(Access(REPLACE, Path('notes.txt')))}")
+with mock.patch.object(QMessageBox, "exec", clicking("Keep asking me")):
+    print(f"keep={confirm_auto_edit()}")
+with mock.patch.object(QMessageBox, "exec", clicking("Turn it on")):
+    print(f"turn_on={confirm_auto_edit()}")
+"""
 
 
 class ToolApprovalTests(unittest.TestCase):
-    def test_question_goes_to_the_gui_thread_and_yes_is_remembered(self):
+    def test_question_goes_to_the_gui_thread_every_time(self):
         approval = ToolApproval()
-        questions: list[str] = []
-        approval._question = lambda folder: questions.append(folder) or True  # instead of the dialog
+        questions: list[Access] = []
+        approval._question = lambda access: questions.append(access) or True  # instead of the dialog
+        access = Access(REPLACE, Path("notes.txt"), "new text")
         answers: list[bool] = []
-        worker = threading.Thread(target=lambda: answers.append(approval.ask(Path("folder"))))
+        worker = threading.Thread(target=lambda: answers.append(approval.ask(access)))
         worker.start()
         self.assertTrue(process_events_until(lambda: bool(answers)))
         worker.join()
         self.assertEqual(answers, [True])
-        self.assertTrue(approval.ask(Path("folder")))  # remembered: no second question
-        self.assertEqual(len(questions), 1)
+        self.assertTrue(approval.ask(access))
+        self.assertEqual(questions, [access, access])  # asked again: nothing is remembered here
+
+    def test_dialogs_stay_on_top_and_auto_edit_needs_an_explicit_yes(self):
+        # Widgets need a QApplication, and this process already has a QCoreApplication: use a child process.
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+        done = subprocess.run([sys.executable, "-c", DIALOG_SCRIPT, str(PROJECT_ROOT / "src")],
+                              capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.split(), ["on_top=True", "parent=None", "default=No", "detail=new",
+                                               "yes=True", "keep=False", "turn_on=True"])
+
+    def test_question_names_the_place_and_what_happens(self):
+        path = Path("C:/Users/me/notes.txt")
+        self.assertIn(str(path), question_text(Access(CREATE, path)))
+        self.assertIn("replaced", question_text(Access(REPLACE, path)))
+        self.assertIn("folder", question_text(Access(MAKE_FOLDER, path)))
+        self.assertIn("goes to the AI", question_text(Access(READ, path)))
 
 
 class OllamaShutdownTests(unittest.TestCase):

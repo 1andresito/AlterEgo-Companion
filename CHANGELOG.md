@@ -2,6 +2,13 @@
 
 What changed in each version, newest first. The release page on GitHub shows the section for that version.
 
+## v0.8.0: Files anywhere, with your OK
+
+- **Fix:** the "Is this okay?" question about files could open behind Alter Ego and the chat, where it couldn't be clicked. It now always comes up on top, in the middle of the screen.
+- Alter Ego can work with files anywhere, not only in `Documents\Alter Ego`. It asks before every single change and shows the full path, and whether a file is new or will be replaced (**Show Details...** shows the new text). A bare file name still goes in `Documents\Alter Ego`. "Put it in my Downloads" (or Desktop, Documents, Pictures, Music, Videos) means your own folder, and the AI is told it may write there instead of refusing.
+- Reading files outside `Documents\Alter Ego` asks first, once per folder.
+- New: **AI** → **Edit files without asking (risky)**. It's off by default, and switching it on shows a warning first. Even when it's on, Alter Ego still asks before touching system folders or its own folders.
+
 ## v0.7.2: The character voice works in the downloads
 
 - **Fix:** the downloaded app couldn't speak in Alter Ego's voice ("the voice-conversion package is missing"). Two parts of the voice converter were left out of the build; they are in now, and every release build checks that the voice loads before it is published.

@@ -25,7 +25,7 @@ The file is created the first time a setting changes. Changes made from the menu
                    "auto_start": true, "auto_pull": false, "default_model": "llama3.2" },
   "claude_code": { "command": "claude", "model": "", "effort": "" },
   "openai":      { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "" },
-  "tools":       { "internet": true, "files": true, "folder": "", "search_url": "" },
+  "tools":       { "internet": true, "files": true, "auto_edit": false, "folder": "", "search_url": "" },
   "memory":      { "enabled": true, "context_messages": 30 },
   "speech": {
     "enabled": true,
@@ -85,8 +85,9 @@ The file is created the first time a setting changes. Changes made from the menu
 ### What the AI may do (`tools`)
 
 - `internet`: let the AI look things up online (**AI** → **Allow internet**).
-- `files`: let the AI read and write files in one folder, asking before the first change (**AI** → **Let me work with files**).
-- `folder`: that one folder. Empty means `Documents/Alter Ego`.
+- `files`: let the AI make, change, read and list files (**AI** → **Let me work with files**). It asks before every change. Reading in its own folder is free; reading anywhere else asks once per folder, because with a cloud AI what it reads leaves your computer.
+- `auto_edit`: change files without asking (**AI** → **Edit files without asking (risky)**). Off by default, and turning it on in the menu shows a warning first. Even when it's on, Alter Ego still asks before changing anything in system folders (Windows, Program Files, ProgramData; `/usr`, `/etc` and the like on Linux) or in its own program and data folders, and before reading outside its folder.
+- `folder`: Alter Ego's own folder, where a file goes when the AI gives only a name. Empty means `Documents/Alter Ego`. A full path can point anywhere.
 - `search_url`: empty means Wikipedia and DuckDuckGo instant answers. Set it to a [SearXNG](https://docs.searxng.org/) server with JSON output on to search the whole web.
 
 ### Memory

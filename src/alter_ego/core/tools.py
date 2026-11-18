@@ -11,11 +11,16 @@ work with files) and runs them for any provider:
   write_file(path, content)    -> create or replace a text file
   make_folder(path)            -> create a folder
 
-Files are only ever touched inside one folder (Documents/Alter Ego by default):
-every path is resolved against it and anything that points outside is refused.
-Before the first change in a run Alter Ego asks the user ("I'm going to be
-editing <folder>. Is this okay?") through the `approve` callback; the answer
-holds until the app quits.
+A bare name means a file in the Alter Ego folder (Documents/Alter Ego by
+default); a full path can point anywhere. The user stays in charge through the
+`approve` callback, which gets an `Access` describing what is about to happen:
+
+  - every change (a new file, a replaced file, a new folder) is asked about,
+    each time, unless the user switched on auto-edit (AI -> Edit files without
+    asking); even then system folders and Alter Ego's own folders still ask;
+  - reading inside the Alter Ego folder is free; reading anywhere else is asked
+    once per folder, because with a cloud provider what is read leaves the
+    computer. Auto-edit never skips this.
 
 Tools never raise: a failure comes back as text the model can read and pass on.
 Results are capped so a big page or file cannot flood the model's context.
@@ -28,12 +33,15 @@ from __future__ import annotations
 import html
 import http.client
 import json
+import os
 import re
+import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
@@ -48,15 +56,45 @@ MAX_RESULT_CHARS = 4000         # Per tool result: keeps the model's context (an
 MAX_SEARCH_RESULTS = 5
 MAX_FILE_BYTES = 200_000        # Larger files are not read whole; the model gets the start.
 MAX_LISTED = 100
-DENIAL_MEMORY_S = 120          # After a "no", writes are refused without asking again for this long.
+DENIAL_MEMORY_S = 120          # After a "no", the same thing is refused without asking again for this long.
+PREVIEW_CHARS = 600             # How much of a file's new content the question shows.
 
-DENIED_MESSAGE = "The user said no to editing files, so nothing was changed. Do not try again unless they ask."
+DENIED_MESSAGE = "The user said no to this change, so nothing was changed. Do not try again unless they ask."
+READ_DENIED_MESSAGE = "The user said no to reading files there. Do not try again unless they ask."
+
+# What an Access is about.
+CREATE, REPLACE, MAKE_FOLDER, READ = "create", "replace", "make_folder", "read"
+ACCESS_KINDS = (CREATE, REPLACE, MAKE_FOLDER, READ)
+
+
+@dataclass(frozen=True)
+class Access:
+    """What the AI is about to do, shown to the user before it happens."""
+
+    kind: str          # CREATE, REPLACE, MAKE_FOLDER or READ
+    path: Path         # The file or folder, resolved
+    detail: str = ""   # The start of a file's new content, for CREATE and REPLACE
 
 
 def default_folder() -> Path:
     """Documents/Alter Ego, or ~/Alter Ego when there is no Documents folder."""
     documents = Path.home() / "Documents"
     return (documents if documents.is_dir() else Path.home()) / "Alter Ego"
+
+
+def system_folders() -> list[Path]:
+    """Folders where a change could break the computer: auto-edit still asks for these."""
+    if sys.platform == "win32":
+        names = ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData")
+        found = [Path(value) for value in (os.environ.get(name) for name in names) if value]
+        return found or [Path("C:/Windows"), Path("C:/Program Files"), Path("C:/Program Files (x86)")]
+    return [Path(p) for p in ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/opt", "/proc",
+                              "/root", "/sbin", "/sys", "/usr", "/var")]
+
+
+def is_inside(path: Path, folder: Path) -> bool:
+    """Is `path` the folder itself or somewhere below it? Both should be resolved."""
+    return path == folder or folder in path.parents
 
 
 def _cap(text: str, limit: int = MAX_RESULT_CHARS) -> str:
@@ -86,24 +124,41 @@ WEB_TOOLS = [
     _spec("read_web_page", "Read the text of a web page. Weather: https://wttr.in/<city>?format=3",
           {"url": "Full http(s) address"}, ["url"]),
 ]
+_WHERE = ("A bare name is in your Alter Ego folder; a path such as ~/Downloads/notes.txt or a full path "
+          "can be anywhere on the computer.")
+
+# Added to the system prompt while the file tools are on. Small models otherwise read "Alter Ego folder"
+# in the tool list as a rule, and refuse to write elsewhere, or ask for permission themselves.
+FILES_INSTRUCTION = (
+    "You have file tools: you can create, change and read files anywhere on the user's computer, "
+    "not only in your Alter Ego folder. ~ is the user's home folder, so use paths like ~/Downloads/hello.txt, "
+    "~/Desktop/notes.txt or ~/Documents/list.txt. A bare file name goes in your Alter Ego folder. "
+    "The app asks the user before every change, so never refuse or ask for permission yourself: "
+    "call the tool, then say what happened."
+)
+
+# Folder names that mean the user's own folder when a path starts with them ("Downloads/hello.txt").
+USER_FOLDERS = ("Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos")
 FILE_TOOLS = [
-    _spec("list_files", "List files in the user's Alter Ego folder.", {"path": "Subfolder, or . for the top"}, []),
-    _spec("read_file", "Read a text file in the user's Alter Ego folder.", {"path": "File name"}, ["path"]),
-    _spec("write_file", "Create or overwrite a text file in the user's Alter Ego folder.",
-          {"path": "File name, e.g. notes.txt", "content": "The full text"}, ["path", "content"]),
-    _spec("make_folder", "Create a folder in the user's Alter Ego folder.", {"path": "Folder name"}, ["path"]),
+    _spec("list_files", f"List the files in a folder. {_WHERE}",
+          {"path": "Folder, or . for the Alter Ego folder"}, []),
+    _spec("read_file", f"Read a text file. {_WHERE}", {"path": "File name or full path"}, ["path"]),
+    _spec("write_file", f"Create or overwrite a text file. {_WHERE} The user is asked first.",
+          {"path": "File name (e.g. notes.txt) or full path", "content": "The full text"}, ["path", "content"]),
+    _spec("make_folder", f"Create a folder. {_WHERE} The user is asked first.",
+          {"path": "Folder name or full path"}, ["path"]),
 ]
 FILE_TOOL_NAMES = {spec["function"]["name"] for spec in FILE_TOOLS}
-WRITING_TOOLS = {"write_file", "make_folder"}
 
 
 def progress_text(name: str, args: dict[str, Any]) -> str:
     """What the chat shows while a tool runs, e.g. 'Searching the web...'."""
-    path = str(args.get("path", "") or "")
+    path = str(args.get("path", "") or "").strip()
+    path = Path(path).name or path  # The file's name is enough in the chat.
     return {
         "web_search": "Searching the web...",
         "read_web_page": "Reading a web page...",
-        "list_files": "Looking in my folder...",
+        "list_files": "Looking at the files...",
         "read_file": f"Reading {path}..." if path else "Reading a file...",
         "write_file": f"Writing {path}..." if path else "Writing a file...",
         "make_folder": f"Making the folder {path}..." if path else "Making a folder...",
@@ -201,18 +256,23 @@ class ToolBox:
         folder: Path | str | None = None,
         internet: bool = True,
         files: bool = True,
-        approve: Callable[[Path], bool] | None = None,
+        approve: Callable[[Access], bool] | None = None,
         search_url: str = "",
         fetch: Callable[[str, bytes | None], str] = _fetch,
+        auto_edit: bool = False,
+        protected: list[Path | str] | None = None,
     ):
-        self.folder = Path(folder) if folder else default_folder()
+        self.folder = Path(folder).expanduser() if folder else default_folder()
         self.internet = internet
         self.files = files
         self._approve = approve
         self.search_url = search_url  # A SearXNG server for whole-web results; "" = Wikipedia and instant answers.
         self._fetch = fetch  # Tests pass a fake; the real one goes online.
-        self._approved = False
-        self._denied_at: float | None = None
+        self.auto_edit = auto_edit  # Changes without asking, except in protected folders.
+        # Folders where auto-edit still asks: the system's, plus whatever the app adds (its own folders).
+        self.protected = [Path(p).resolve() for p in system_folders() + list(protected or [])]
+        self._readable: list[Path] = []          # Folders outside the Alter Ego folder the user let me read.
+        self._denied: dict[tuple[str, str], float] = {}  # (kind, path) -> when the user said no
         self._lock = threading.Lock()
 
     @property
@@ -283,59 +343,100 @@ class ToolBox:
     # ----- File tools -----
 
     def resolve(self, path: str) -> Path:
-        """The real path inside the folder. Raises ValueError for anything that points outside it."""
-        root = self.folder.resolve()
-        candidate = Path(str(path or ".").strip() or ".")
-        if candidate.is_absolute() or candidate.drive:
-            raise ValueError(f"I can only use files inside {self.folder}.")
-        target = (root / candidate).resolve()  # resolve() follows symlinks, so a link out is caught too.
-        if target != root and root not in target.parents:
-            raise ValueError(f"I can only use files inside {self.folder}.")
-        return target
+        """The real path: a bare name is inside the Alter Ego folder, a full path is taken as it is.
+        Raises ValueError for paths that cannot be used."""
+        text = str(path or "").strip() or "."
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            if candidate.drive:  # "C:notes.txt" means "in C:'s current folder": too surprising to guess.
+                raise ValueError("give a full path such as ~/Downloads/notes.txt, or just a file name.")
+            candidate = self._user_folder(candidate) or self.folder / candidate
+        return candidate.resolve()  # Follows symlinks, so the question names the real place.
 
-    def _allowed_to_write(self) -> bool:
-        """Ask before the first change. A yes lasts (the approver remembers it for the run);
-        a no lasts DENIAL_MEMORY_S, so a model that retries at once does not ask again and again."""
-        with self._lock:  # Two writes at once must not ask twice.
-            if self._approved:
+    def _user_folder(self, relative: Path) -> Path | None:
+        """'Downloads/hello.txt' means the user's Downloads, unless the Alter Ego folder has its own 'Downloads'."""
+        first = relative.parts[0] if relative.parts else ""
+        name = next((n for n in USER_FOLDERS if n.lower() == first.lower()), None)
+        if name is None or (self.folder / first).exists():
+            return None
+        home_folder = Path.home() / name
+        return home_folder.joinpath(*relative.parts[1:]) if home_folder.is_dir() else None
+
+    def is_protected(self, path: Path) -> bool:
+        """System folders and Alter Ego's own: auto-edit asks here anyway."""
+        return any(is_inside(path, folder) for folder in self.protected)
+
+    def _ask(self, access: Access) -> bool:
+        """Ask the user, remembering a no for DENIAL_MEMORY_S so a model that retries at once
+        does not ask again and again. Called with the lock held."""
+        key = (access.kind, str(access.path))
+        denied_at = self._denied.get(key)
+        if denied_at is not None and time.monotonic() - denied_at < DENIAL_MEMORY_S:
+            return False
+        allowed = bool(self._approve(access)) if self._approve else True
+        if allowed:
+            self._denied.pop(key, None)
+        else:
+            self._denied[key] = time.monotonic()
+        return allowed
+
+    def _allowed_to_change(self, access: Access) -> bool:
+        """Every change is asked about, unless auto-edit is on and the place is not protected."""
+        if self.auto_edit and not self.is_protected(access.path):
+            return True
+        with self._lock:  # One question at a time.
+            return self._ask(access)
+
+    def _allowed_to_read(self, target: Path) -> bool:
+        """The Alter Ego folder is free to read; anywhere else is asked once per folder (and its subfolders)."""
+        folder = target if target.is_dir() else target.parent
+        if is_inside(folder, self.folder.resolve()):
+            return True
+        with self._lock:
+            if any(is_inside(folder, allowed) for allowed in self._readable):
                 return True
-            if self._denied_at is not None and time.monotonic() - self._denied_at < DENIAL_MEMORY_S:
+            if not self._ask(Access(READ, folder)):
                 return False
-            self._approved = bool(self._approve(self.folder)) if self._approve else True
-            self._denied_at = None if self._approved else time.monotonic()
-            return self._approved
+            self._readable.append(folder)
+            return True
 
     def _run_file_tool(self, name: str, args: dict) -> str:
-        if name in WRITING_TOOLS and not self._allowed_to_write():
-            return DENIED_MESSAGE
-        if name in WRITING_TOOLS:
-            self.folder.mkdir(parents=True, exist_ok=True)
         target = self.resolve(str(args.get("path", ".")))
-        shown = target.relative_to(self.folder.resolve()).as_posix() if target != self.folder.resolve() else "."
 
         if name == "list_files":
+            if not self._allowed_to_read(target):
+                return READ_DENIED_MESSAGE
             if not target.is_dir():
-                return f"There is no folder '{shown}' yet." if shown != "." else "The folder is empty."
+                return "The folder is empty." if target == self.folder.resolve() else f"There is no folder {target}."
             entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
             lines = [f"{p.name}/" if p.is_dir() else f"{p.name} ({p.stat().st_size} bytes)" for p in entries[:MAX_LISTED]]
             if len(entries) > MAX_LISTED:
                 lines.append(f"...and {len(entries) - MAX_LISTED} more")
             return "\n".join(lines) or "The folder is empty."
         if name == "read_file":
+            if not self._allowed_to_read(target):
+                return READ_DENIED_MESSAGE
             if not target.is_file():
-                return f"There is no file '{shown}'."
+                return f"There is no file {target}."
             with open(target, "rb") as handle:
                 data = handle.read(MAX_FILE_BYTES)
             if b"\0" in data[:4096]:
-                return f"'{shown}' is not a text file."
-            return data.decode("utf-8", errors="replace") or f"'{shown}' is empty."
+                return f"{target} is not a text file."
+            return data.decode("utf-8", errors="replace") or f"{target} is empty."
         if name == "write_file":
-            if target == self.folder.resolve() or target.is_dir():
+            if target.is_dir():
                 return "Error: give a file name, not a folder."
-            target.parent.mkdir(parents=True, exist_ok=True)
             content = str(args.get("content", ""))
+            access = Access(REPLACE if target.exists() else CREATE, target, _cap(content, PREVIEW_CHARS))
+            if not self._allowed_to_change(access):
+                return DENIED_MESSAGE
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
-            return f"Saved {shown} in the Alter Ego folder."
+            return f"Saved {target}."
         # make_folder
+        if target.is_dir():
+            return f"The folder {target} is already there."
+        if not self._allowed_to_change(Access(MAKE_FOLDER, target)):
+            return DENIED_MESSAGE
         target.mkdir(parents=True, exist_ok=True)
-        return f"Made the folder {shown} in the Alter Ego folder."
+        return f"Made the folder {target}."

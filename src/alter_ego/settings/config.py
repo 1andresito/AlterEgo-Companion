@@ -49,8 +49,9 @@ DEFAULTS: dict[str, Any] = {
     },
     "tools": {
         "internet": True,    # let the AI look things up online when a question needs it (AI -> Allow internet)
-        "files": True,       # let the AI read and write files in one folder, asking before the first change
-        "folder": "",        # "" = Documents/Alter Ego; the only folder the AI may touch
+        "files": True,       # let the AI read and write files; it asks before every change (AI -> Let me work with files)
+        "auto_edit": False,  # change files without asking (risky, off by default); system and Alter Ego folders still ask
+        "folder": "",        # "" = Documents/Alter Ego; where new files go when no full path is given
         "search_url": "",    # "" = Wikipedia and DuckDuckGo instant answers; or a SearXNG server for the whole web
     },
     "memory": {
@@ -92,6 +93,13 @@ def assets_dir() -> Path:
         # src/alter_ego/settings/config.py -> project root is three folders up.
         base = Path(__file__).resolve().parents[3]
     return base / "assets"
+
+
+def program_dir() -> Path:
+    """The folder the program runs from: the installed program folder, or the project folder from source."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[3]
 
 
 def data_dir() -> Path:

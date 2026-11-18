@@ -11,11 +11,12 @@ from typing import Callable
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QActionGroup, QDesktopServices
-from PySide6.QtWidgets import QMenu
+from PySide6.QtWidgets import QMenu, QMessageBox
 
 from .core.assistant import Assistant, ProviderResponder
 from .providers import OFFLINE_ID, PROVIDER_LABELS, ProviderError, tools_folder
 from .settings.config import Config
+from .tool_approval import on_top_box, show_on_top
 
 
 def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_settings: Callable[[], None],
@@ -87,7 +88,7 @@ def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_setti
     # --- What the AI may do besides talking (core/tools.py) ---
     menu.addSeparator()
 
-    def add_toggle(label: str, key: str) -> None:
+    def add_toggle(label: str, key: str):
         action = menu.addAction(label)
         action.setCheckable(True)
         action.setChecked(bool(config.get("tools", key, True)))
@@ -98,9 +99,29 @@ def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_setti
             apply_settings()
 
         action.toggled.connect(toggled)
+        return action
 
     add_toggle("Allow internet", "internet")
-    add_toggle("Let me work with files", "files")
+    files_action = add_toggle("Let me work with files", "files")
+
+    # Changing files without asking: off by default, and turning it on needs a second yes.
+    auto_edit = menu.addAction("Edit files without asking (risky)")
+    auto_edit.setCheckable(True)
+    auto_edit.setChecked(bool(config.get("tools", "auto_edit", False)))
+    auto_edit.setEnabled(files_action.isChecked())
+    files_action.toggled.connect(auto_edit.setEnabled)
+
+    def toggle_auto_edit(checked: bool) -> None:
+        if checked and not confirm_auto_edit():
+            auto_edit.blockSignals(True)
+            auto_edit.setChecked(False)
+            auto_edit.blockSignals(False)
+            return
+        config.set("tools", "auto_edit", bool(checked))
+        config.save()
+        apply_settings()
+
+    auto_edit.toggled.connect(toggle_auto_edit)
 
     def open_files_folder() -> None:
         folder = tools_folder(config)
@@ -129,3 +150,23 @@ def add_ai_menu(parent: QMenu, assistant: Assistant, config: Config, apply_setti
         auto.toggled.connect(toggle_auto)
         menu.addAction("Check for updates now", check_updates)
     return menu
+
+
+AUTO_EDIT_WARNING = (
+    "Um... are you sure? With this on, I'll create and overwrite files anywhere you can, "
+    "without checking with you first.\n\n"
+    "If I get something wrong, I could overwrite something important, and that can't be undone. "
+    "I'll still ask before touching system folders or my own folders, and before reading "
+    "files outside my folder."
+)
+
+
+def confirm_auto_edit() -> bool:
+    """The warning before auto-edit is switched on. True only for an explicit "Turn it on"."""
+    box = on_top_box(AUTO_EDIT_WARNING, QMessageBox.Icon.Warning)
+    turn_on = box.addButton("Turn it on", QMessageBox.ButtonRole.DestructiveRole)
+    keep_off = box.addButton("Keep asking me", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(keep_off)
+    box.setEscapeButton(keep_off)
+    show_on_top(box)
+    return box.clickedButton() is turn_on

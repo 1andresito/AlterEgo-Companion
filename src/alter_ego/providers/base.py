@@ -26,6 +26,11 @@ class Provider(ABC):
     id: ClassVar[str] = ""
     label: ClassVar[str] = ""
 
+    @property
+    def file_tools(self) -> bool:
+        """Can the model use Alter Ego's file tools right now? The prompt then says how (core/tools.py)."""
+        return False
+
     @abstractmethod
     def describe(self) -> str:
         """One line saying where this provider points, e.g. 'Ollama at http://...'."""

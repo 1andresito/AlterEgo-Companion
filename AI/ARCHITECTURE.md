@@ -55,7 +55,7 @@ AlterEgo-Companion/
 │   ├── voice_menu.py          # "Voice" submenu: push to talk, key, microphone, engine, hands-free
 │   ├── speak_menu.py          # "Spoken replies" submenu: on/off, volume, speakers
 │   ├── memory_menu.py         # "Memory" submenu: on/off, forget everything
-│   ├── tool_approval.py       # Asks the user before the AI first changes a file (Yes/No dialog)
+│   ├── tool_approval.py       # Asks the user before each file change (an on-top Yes/No dialog)
 │   ├── update_prompt.py       # "There's a new version of me": asks, shows the download, quits for the update
 │   ├── character.py           # Desktop window: drawing, effects, dragging, menus
 │   ├── chat.py                # Chat panel: history, day dividers, input, talk button, typewriter
@@ -65,7 +65,7 @@ AlterEgo-Companion/
 │   │   ├── personality.py     # Loads the personality JSON
 │   │   ├── conversation.py    # Message + Conversation history
 │   │   ├── memory.py          # MemoryStore: saves the Conversation to SQLite, restores it
-│   │   ├── tools.py           # ToolBox: web search, reading pages, files in one folder
+│   │   ├── tools.py           # ToolBox: web search, reading pages, files (each change approved)
 │   │   ├── first_run.py       # What is missing (SetupPlan) and getting it (SetupRunner, worker thread)
 │   │   ├── updates.py         # New release? Download it and hand over to the new version (UpdateJob)
 │   │   └── assistant.py       # Assistant (worker thread, expression tags), responders
@@ -126,12 +126,15 @@ AlterEgo-Companion/
 
 ## Tools
 
-`core/tools.py` holds the `ToolBox`: what the AI may do besides talking (web search, reading a page, files in one folder).
+`core/tools.py` holds the `ToolBox`: what the AI may do besides talking (web search, reading a page, working with files).
 - `create_provider` builds one from the `tools` settings.
 - `OllamaProvider` offers it through Ollama's tool calling and runs the calls itself.
 - `ClaudeCodeProvider` uses Claude Code's own `WebSearch`/`WebFetch`. It reaches the file tools through `providers/tools_mcp.py`, an MCP server that is Alter Ego itself started with `--tool-server` (this also works from the packaged exe).
-- A file change first asks the user through `tool_approval.ToolApproval.ask()`. The worker thread waits while the GUI shows a Yes/No dialog. Ollama reaches it directly; the tool server reaches it through `ApprovalServer` (127.0.0.1, one-time token).
-- Tools never raise, cap their results, and refuse paths outside the folder.
+- A bare file name means the Alter Ego folder (`tools.folder`); a full path can point anywhere. `~/Downloads/...`, and a path starting with a home folder's name (`Downloads/...`), mean the user's own folder.
+- While a provider has the file tools (`Provider.file_tools`), `ProviderResponder.build_messages` adds `FILES_INSTRUCTION` to the system prompt. Without it, small models read "Alter Ego folder" in the tool list as a rule and refuse to write elsewhere.
+- Every file change, and a read outside the Alter Ego folder (once per folder), is described as an `Access` (kind, path, new content) and asked through `tool_approval.ToolApproval.ask()`. The worker thread waits while the GUI shows an on-top Yes/No dialog. Ollama reaches it directly; the tool server reaches it through `ApprovalServer` (127.0.0.1, one-time token).
+- `tools.auto_edit` (off by default) skips the question for changes, except in `ToolBox.is_protected` places: system folders and Alter Ego's own program and data folders. Reads always ask.
+- Tools never raise and cap their results.
 
 ## Outputs in more detail
 
@@ -183,4 +186,4 @@ The folder holds:
 - `claude_code/mcp.json`: how Claude Code starts the file-tool server
 - `voices/`: the Kokoro files, plus the RVC base models in `rvc/`
 
-The voice model itself is in `assets/voice/`, not here. Whisper models go to the Hugging Face cache. The AI's file tools write only in `Documents/Alter Ego` (`tools.folder`), after the user said yes. Nothing else is written anywhere.
+The voice model itself is in `assets/voice/`, not here. Whisper models go to the Hugging Face cache. The AI's file tools write only where the user said yes to each change (or anywhere outside protected folders, with `tools.auto_edit` on). Nothing else is written anywhere.

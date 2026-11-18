@@ -33,6 +33,7 @@ from ..providers.base import ChatMessage, Provider, ProviderError
 from ..settings.config import Config
 from .conversation import Conversation, Message, Role
 from .personality import Personality
+from .tools import FILES_INSTRUCTION
 
 # ----- Expression tags -----
 
@@ -311,7 +312,10 @@ class ProviderResponder:
             return DEFAULT_CONTEXT_MESSAGES
 
     def build_messages(self, personality: Personality, history: Sequence[Message]) -> list[ChatMessage]:
-        messages = [ChatMessage("system", personality.system_prompt + "\n\n" + TAG_INSTRUCTION)]
+        system = personality.system_prompt + "\n\n" + TAG_INSTRUCTION
+        if self.provider.file_tools:
+            system += "\n\n" + FILES_INSTRUCTION
+        messages = [ChatMessage("system", system)]
         usable = [m for m in history if m.complete and m.text]
         limit = self.context_limit()
         if limit:

@@ -8,7 +8,7 @@ Inspired by the digital character Alter Ego from Danganronpa. Built with Python 
 
 > This is an unofficial, non-commercial fan project. It is not affiliated with or endorsed by Spike Chunsoft or the Danganronpa franchise.
 
-**Current version: v0.7.2** ([what's new](CHANGELOG.md))
+**Current version: v0.8.0** ([what's new](CHANGELOG.md))
 
 ---
 
@@ -64,7 +64,7 @@ When a new version is out, Alter Ego asks you at start-up: **Update now**, **Not
 - **Talk back.** Every reply is read out loud in Alter Ego's own voice, made on your computer, sentence by sentence while the reply is still arriving.
 - **Remember.** Conversations are saved on your computer, so Alter Ego picks up where you left off.
 - **Look things up.** When a question needs it, Alter Ego can search the web and read a page. Switch this off with **AI** → **Allow internet**.
-- **Work with files.** Ask it to make, read or list text files. It works only in `Documents\Alter Ego`, and asks before the first change.
+- **Work with files.** Ask it to make, change, read or list text files, anywhere on your computer. It asks before every change and shows you the full path. A bare file name goes in `Documents\Alter Ego`; reading somewhere else asks first, once per folder. **AI** → **Edit files without asking (risky)** skips the question for changes. It's off unless you switch it on, it warns you first, and it still asks for system folders and Alter Ego's own folders.
 - **Be honest.** When it doesn't know something and can't check, it says "I don't know" instead of guessing.
 - **Always start.** No AI, no microphone, no speakers? Alter Ego still runs and tells you, in character, what's missing.
 
@@ -99,7 +99,7 @@ Pick one under **AI** → **Provider**. Changes apply at once.
 
 **Ollama (local, free, the default).** The AI runs on your computer and nothing leaves it. The first-run setup installs Ollama and a model for you. Alter Ego starts Ollama when it needs it and switches it off when you quit, so the model doesn't keep using memory.
 
-**Claude, through Claude Code (no API key).** If you have a Claude subscription and [Claude Code](https://claude.com/claude-code), install it, run `claude` once and sign in with `/login`. Then choose **Claude (via Claude Code login)**. Expect a few seconds before the first word. Claude Code's coding tools stay disabled: Claude can only search the web and use Alter Ego's one files folder, if you allow those.
+**Claude, through Claude Code (no API key).** If you have a Claude subscription and [Claude Code](https://claude.com/claude-code), install it, run `claude` once and sign in with `/login`. Then choose **Claude (via Claude Code login)**. Expect a few seconds before the first word. Claude Code's coding tools stay disabled: Claude can only search the web and use Alter Ego's own file tools, which ask you first, if you allow those.
 
 > Whether a Claude subscription may be used by a third-party app like this one is governed by Anthropic's usage policies, which can change. Check them before relying on it.
 
@@ -131,7 +131,7 @@ Alter Ego is local-first. Here is everything that can leave your computer, and w
   - `voices/`: the downloaded voice files.
   - `alter_ego.log`: diagnostics from the last run.
   - `claude_code/`: what Claude Code needs to resume its session.
-- **Your documents.** With **Let me work with files** on, the AI reads and writes only in `Documents\Alter Ego`, and only after you said yes.
+- **Your documents.** With **Let me work with files** on, the AI changes a file only after you said yes to that change (unless you switched on **Edit files without asking**). It reads `Documents\Alter Ego` freely, and anywhere else only after you said yes. With Claude or an online AI, what it reads is sent to that service.
 
 Uninstalling Alter Ego keeps this data folder, so your memories survive an update. Delete the folder if you want them gone.
 
@@ -162,7 +162,8 @@ Uninstalling Alter Ego keeps this data folder, so your memories survive an updat
 - [x] v0.6.0: spoken replies in the character's own voice
 - [x] v0.7.0: easy install: downloads on the Releases page and a first-run setup
 - [x] v0.7.1: updates from inside the app, and a CRT switch-on and switch-off
-- [ ] v0.8.0: reminders and notifications: Alter Ego speaks up on its own
+- [x] v0.8.0: files anywhere on your computer, with a question before every change
+- [ ] v0.9.0: reminders and notifications: Alter Ego speaks up on its own
 - [ ] Later: long-term recall of older conversations
 
 ---

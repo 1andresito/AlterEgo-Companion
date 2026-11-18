@@ -65,6 +65,10 @@ class OllamaProvider(Provider):
     def describe(self) -> str:
         return f"Ollama at {self.base_url}"
 
+    @property
+    def file_tools(self) -> bool:
+        return self.tools is not None and self.tools.files
+
     # ----- Getting ready -----
 
     def warm_up(self, progress: Callable[[str], None]) -> None:

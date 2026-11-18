@@ -2,17 +2,17 @@
 
 Claude Code runs tools from "MCP servers": programs it starts and talks to with
 JSON-RPC, one JSON object per line on stdin/stdout. This module is such a
-server for the file tools in core/tools.py, so Claude works in the same one
-folder as Ollama does, with the same path checks. Claude's own web tools
+server for the file tools in core/tools.py, so Claude works with files the
+same way Ollama does, with the same questions. Claude's own web tools
 (WebSearch, WebFetch) cover the internet, so only file tools are served here.
 
     Claude Code --stdin/stdout--> tools_mcp (this file, a separate process)
-                                     │  first change in the folder?
+                                     │  a change, or a read outside the Alter Ego folder?
                                      ▼
                        ApprovalServer in Alter Ego (127.0.0.1, random port + token)
                                      │
                                      ▼
-                     "I'm going to be editing <folder>. Is this okay?"  Yes / No
+                     "Can I change <path>?"  Yes / No
 
 The server process is Alter Ego itself started with `--tool-server` (see
 main.py), so it also works from a packaged build. The approval address and a
@@ -31,11 +31,13 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from ..core.tools import FILE_TOOLS, ToolBox
+from ..core.tools import ACCESS_KINDS, FILE_TOOLS, PREVIEW_CHARS, Access, ToolBox
 
 SERVER_NAME = "alter_ego"           # Claude Code names the tools mcp__alter_ego__<tool>.
 APPROVAL_ENV = "ALTER_EGO_APPROVAL"  # "port:token" of the app's ApprovalServer
-FOLDER_ENV = "ALTER_EGO_FOLDER"
+FOLDER_ENV = "ALTER_EGO_FOLDER"     # Where bare file names go
+AUTO_EDIT_ENV = "ALTER_EGO_AUTO_EDIT"  # "1" = change files without asking (AI -> Edit files without asking)
+PROTECTED_ENV = "ALTER_EGO_PROTECTED"  # Alter Ego's own folders, os.pathsep-separated: auto-edit asks there anyway
 TOOL_SERVER_FLAG = "--tool-server"
 APPROVAL_TIMEOUT_S = 180            # How long a question may stay unanswered before it counts as "no".
 PROTOCOL_VERSION = "2025-06-18"     # Used only if the client does not say which version it speaks.
@@ -52,9 +54,9 @@ def tool_server_command() -> list[str]:
 # ----- In the app: answering approval questions -----
 
 class ApprovalServer:
-    """Listens on 127.0.0.1 for "may I edit this folder?" from the tool server and asks `approve`."""
+    """Listens on 127.0.0.1 for "may I do this?" from the tool server and asks `approve`."""
 
-    def __init__(self, approve: Callable[[Path], bool]):
+    def __init__(self, approve: Callable[[Access], bool]):
         self._approve = approve
         self.token = secrets.token_hex(16)
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -90,19 +92,24 @@ class ApprovalServer:
                 request = json.loads(connection.makefile("r", encoding="utf-8").readline() or "{}")
                 if not secrets.compare_digest(str(request.get("token", "")), self.token):
                     return
-                allowed = bool(self._approve(Path(str(request.get("folder", "")))))
+                kind, path = str(request.get("kind", "")), str(request.get("path", ""))
+                allowed = False
+                if kind in ACCESS_KINDS and path:  # Anything malformed is a no, without asking.
+                    detail = str(request.get("detail", ""))[:PREVIEW_CHARS + 50]
+                    allowed = bool(self._approve(Access(kind, Path(path), detail)))
                 connection.sendall((json.dumps({"ok": allowed}) + "\n").encode("utf-8"))
             except (OSError, ValueError):
                 pass
 
 
-def ask_app(address: str, folder: Path) -> bool:
-    """In the tool server: ask the app whether the folder may be changed. Any failure means no."""
+def ask_app(address: str, access: Access) -> bool:
+    """In the tool server: ask the app whether this may happen. Any failure means no."""
     port, _, token = address.partition(":")
+    request = {"token": token, "kind": access.kind, "path": str(access.path), "detail": access.detail}
     try:
         with socket.create_connection(("127.0.0.1", int(port)), timeout=5) as connection:
             connection.settimeout(APPROVAL_TIMEOUT_S + 5)
-            connection.sendall((json.dumps({"token": token, "folder": str(folder)}) + "\n").encode("utf-8"))
+            connection.sendall((json.dumps(request) + "\n").encode("utf-8"))
             answer = json.loads(connection.makefile("r", encoding="utf-8").readline() or "{}")
             return bool(answer.get("ok"))
     except (OSError, ValueError):
@@ -144,8 +151,10 @@ def main() -> int:
     """Serve the file tools on stdin/stdout until Claude Code closes the pipe."""
     address = os.environ.get(APPROVAL_ENV, "")
     folder = os.environ.get(FOLDER_ENV) or None
+    protected = [p for p in os.environ.get(PROTECTED_ENV, "").split(os.pathsep) if p]
     tools = ToolBox(folder=folder, internet=False, files=True,
-                    approve=(lambda path: ask_app(address, path)) if address else (lambda path: False))
+                    approve=(lambda access: ask_app(address, access)) if address else (lambda access: False),
+                    auto_edit=os.environ.get(AUTO_EDIT_ENV) == "1", protected=protected)
     # File descriptors 0 and 1, not sys.stdin/sys.stdout: in the packaged (windowed) build Python sets
     # those to None because there is no console, yet the pipes Claude Code passed are there.
     stdin = open(0, "r", encoding="utf-8", closefd=False)

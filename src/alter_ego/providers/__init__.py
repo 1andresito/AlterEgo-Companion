@@ -10,8 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from ..core.tools import ToolBox, default_folder
-from ..settings.config import Config, data_dir
+from ..core.tools import Access, ToolBox, default_folder
+from ..settings.config import Config, data_dir, program_dir
 from .base import ChatMessage, Provider, ProviderError
 from .claude_code import ClaudeCodeProvider
 from .ollama import OllamaProvider
@@ -30,26 +30,33 @@ PROVIDER_LABELS: dict[str, str] = {
 
 
 def tools_folder(config: Config) -> Path:
-    """The one folder the AI may work in."""
+    """The AI's own folder: where new files go when no full path is given."""
     custom = str(config.get("tools", "folder", "") or "")
     return Path(custom).expanduser() if custom else default_folder()
 
 
-def build_toolbox(config: Config, approve: Callable[[Path], bool] | None = None) -> ToolBox:
-    """The tools the user allowed in the AI menu. `approve` is asked before the first file change."""
+def protected_folders() -> list[Path]:
+    """Alter Ego's own folders: auto-edit still asks before changing anything in them."""
+    return [data_dir(), program_dir()]
+
+
+def build_toolbox(config: Config, approve: Callable[[Access], bool] | None = None) -> ToolBox:
+    """The tools the user allowed in the AI menu. `approve` is asked before file changes."""
     return ToolBox(
         folder=tools_folder(config),
         internet=bool(config.get("tools", "internet", True)),
         files=bool(config.get("tools", "files", True)),
-        approve=approve or (lambda _folder: False),  # Nobody to ask means no changes.
+        approve=approve or (lambda _access: False),  # Nobody to ask means no changes.
         search_url=str(config.get("tools", "search_url", "") or ""),
+        auto_edit=bool(config.get("tools", "auto_edit", False)),
+        protected=protected_folders(),
     )
 
 
 def create_provider(
     provider_id: str,
     config: Config,
-    approve: Callable[[Path], bool] | None = None,
+    approve: Callable[[Access], bool] | None = None,
     approval_address: str = "",
 ) -> Provider | None:
     """Build the provider named in the config. Returns None for offline mode.
@@ -79,6 +86,8 @@ def create_provider(
             # File tools need someone to approve changes; without the app's approval server they stay off.
             files_folder=tools.folder if tools.files and approval_address else None,
             approval_address=approval_address,
+            auto_edit=tools.auto_edit,
+            protected=protected_folders(),
         )
     if provider_id == OpenAICompatibleProvider.id:
         return OpenAICompatibleProvider(

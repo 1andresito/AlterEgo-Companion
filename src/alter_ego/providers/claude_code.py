@@ -7,8 +7,8 @@ text deltas as they are generated. This provider runs that command with
 Alter Ego's personality as the system prompt. Claude Code's coding tools
 (shell, editing, reading the disk) are always off. Only what the user allowed
 in the AI menu is offered: Claude's own WebSearch/WebFetch for the internet,
-and Alter Ego's file tools for one folder through a small MCP server
-(tools_mcp.py), which asks the user before the first change.
+and Alter Ego's file tools through a small MCP server (tools_mcp.py), which
+asks the user before every change and before reading outside the Alter Ego folder.
 
 Conversation memory: the first message starts a session with a fresh UUID
 (`--session-id`); later messages pass `--resume <uuid>` so Claude Code keeps
@@ -34,7 +34,7 @@ from typing import Callable, Iterator, Sequence
 
 from ..core.tools import FILE_TOOL_NAMES, progress_text
 from .base import ChatMessage, Provider, ProviderError
-from .tools_mcp import APPROVAL_ENV, FOLDER_ENV, SERVER_NAME, tool_server_command
+from .tools_mcp import APPROVAL_ENV, AUTO_EDIT_ENV, FOLDER_ENV, PROTECTED_ENV, SERVER_NAME, tool_server_command
 
 DEFAULT_COMMAND = "claude"
 # Model aliases Claude Code understands. "default" means: whatever Claude Code is set to.
@@ -61,6 +61,8 @@ class ClaudeCodeProvider(Provider):
         files_folder: Path | None = None,
         approval_address: str = "",
         tool_server: Sequence[str] | None = None,
+        auto_edit: bool = False,
+        protected: Sequence[Path] = (),
     ):
         # `command` is normally "claude"; tests pass a list such as [python, fake_script].
         self._command = list(command) if not isinstance(command, str) else command
@@ -70,15 +72,22 @@ class ClaudeCodeProvider(Provider):
         # conversation can be resumed after Alter Ego restarts.
         self._session_file = session_file
         self._session_id: str | None = _read_session_file(session_file)
-        # Tools: Claude's own web search and fetch, and Alter Ego's file tools (tools_mcp.py) for one folder.
+        # Tools: Claude's own web search and fetch, and Alter Ego's file tools (tools_mcp.py).
+        # `files_folder` is where bare file names go; the user approves every change.
         self._internet = internet
         self._files_folder = files_folder
         self._approval_address = approval_address
+        self._auto_edit = auto_edit
+        self._protected = [str(p) for p in protected]
         self._tool_server = list(tool_server) if tool_server else tool_server_command()
 
     @property
     def _files(self) -> bool:
         return self._files_folder is not None
+
+    @property
+    def file_tools(self) -> bool:
+        return self._files
 
     def _write_mcp_config(self) -> Path:
         """The MCP config that tells Claude Code how to start the file-tool server."""
@@ -89,7 +98,12 @@ class ClaudeCodeProvider(Provider):
             "type": "stdio",
             "command": self._tool_server[0],
             "args": self._tool_server[1:],
-            "env": {APPROVAL_ENV: self._approval_address, FOLDER_ENV: str(self._files_folder)},
+            "env": {
+                APPROVAL_ENV: self._approval_address,
+                FOLDER_ENV: str(self._files_folder),
+                AUTO_EDIT_ENV: "1" if self._auto_edit else "",
+                PROTECTED_ENV: os.pathsep.join(self._protected),
+            },
         }}}
         try:
             path.write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -175,7 +189,7 @@ class ClaudeCodeProvider(Provider):
             "--output-format", "stream-json",
             "--verbose",                  # required by stream-json in print mode
             "--include-partial-messages",  # text deltas as they are generated
-            "--tools", ",".join(built_in),  # never the shell or the user's files outside the one folder
+            "--tools", ",".join(built_in),  # never the shell or Claude Code's own file tools, which don't ask
             "--max-turns", str(TOOL_TURNS if allowed else 1),
             "--disable-slash-commands",
             "--setting-sources", "",      # ignore the user's coding hooks/plugins
