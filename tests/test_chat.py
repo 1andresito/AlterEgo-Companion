@@ -109,7 +109,7 @@ WAITING_SCRIPT = textwrap.dedent("""
     while chat._typed_chars < len(reply.text):
         chat._type_step()
     assert last_line() == "ALTER EGO > Let me look.▌", last_line()
-    chat._last_typed_at -= chat_module.STALL_S
+    chat._last_typed_at -= chat_module.STALL_S + 0.5  # well past it: Windows' clock is coarse
     chat._dots_step()
     assert last_line().startswith("ALTER EGO > Let me look. ."), last_line()
     assistant._on_progress("Searching the web...")  # a search mid-reply says so after the words

@@ -329,7 +329,7 @@ class ToolOllamaHandler(BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.end_headers()
-        tool_messages = [m for m in request["messages"] if m["role"] == "tool"]
+        tool_messages = [m for m in request.get("messages", []) if m["role"] == "tool"]
         if request.get("model") == "texty" and request.get("tools") and not tool_messages:
             written = json.dumps({"name": "write_file", "parameters": {"path": "t.txt", "content": "typed"}})
             lines = [{"message": {"role": "assistant", "content": "[shy] " + written[:9]}, "done": False},
