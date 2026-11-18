@@ -29,6 +29,7 @@ from ..providers.ollama import DEFAULT_BASE_URL, OllamaProvider
 from ..providers.ollama_server import DEFAULT_COMMAND, is_local, is_reachable, ollama_server
 from ..settings.config import Config
 from ..voice.synthesizer import Synthesizer
+from . import gpu_pack
 
 
 @dataclass(frozen=True)
@@ -52,13 +53,16 @@ class SetupStep(Enum):
     OLLAMA = "ollama"
     MODEL = "model"
     VOICE = "voice"
+    GPU = "gpu"
 
 
 STEP_LABELS = {
     SetupStep.OLLAMA: "Install Ollama",
     SetupStep.MODEL: "Download the AI model",
     SetupStep.VOICE: "Download my voice",
+    SetupStep.GPU: "Download the GPU pack",
 }
+GPU_PACK_SIZE_GB = 2.8  # Shown before asking; the real size is read from the download server.
 
 
 @dataclass
@@ -73,6 +77,7 @@ class SetupPlan:
     voice_size_mb: int = 0
     base_url: str = DEFAULT_BASE_URL
     command: str = DEFAULT_COMMAND
+    gpu_offered: bool = False         # An NVIDIA card and a packaged Windows build: the GPU pack may be added
 
     @property
     def needs_ollama(self) -> bool:
@@ -84,6 +89,7 @@ class SetupPlan:
 
     @property
     def anything_missing(self) -> bool:
+        # The GPU pack is an extra: it is offered in the window, but never opens it by itself.
         return self.needs_ollama or self.needs_model or self.voice_needed
 
 
@@ -94,6 +100,7 @@ class SetupChoices:
     install_ollama: bool = False
     model: str = ""        # "" = no model now
     voice: bool = False
+    gpu: bool = False
 
     def steps(self) -> list[SetupStep]:
         steps = []
@@ -103,6 +110,8 @@ class SetupChoices:
             steps.append(SetupStep.MODEL)
         if self.voice:
             steps.append(SetupStep.VOICE)
+        if self.gpu:
+            steps.append(SetupStep.GPU)
         return steps
 
 
@@ -127,6 +136,7 @@ def make_plan(config: Config, synthesizer: Synthesizer | None) -> SetupPlan:
         voice_size_mb=int(getattr(synthesizer, "download_size_mb", 0) or 0) if voice_needed else 0,
         base_url=base_url,
         command=command,
+        gpu_offered=bool(config.voice_enabled and gpu_pack.offered()),
     )
 
 
@@ -168,7 +178,17 @@ class _SetupWorker(QThread):
             return "Ollama is installed."
         if step is SetupStep.MODEL:
             return self._pull_model(self._choices.model)
+        if step is SetupStep.GPU:
+            return self._install_gpu_pack()
         return self._download_voice()
+
+    def _install_gpu_pack(self) -> str:
+        self.progress.emit("Finding the GPU pack...", -1)
+        try:
+            name = gpu_pack.install(gpu_pack.find_wheels(), self.progress.emit, self.isInterruptionRequested)
+        except gpu_pack.GpuPackError as error:
+            raise ProviderError(str(error)) from None
+        return f"My voice will use {name} from now on."
 
     def _pull_model(self, model: str) -> str:
         plan = self._plan

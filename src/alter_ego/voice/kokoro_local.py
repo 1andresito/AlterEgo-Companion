@@ -144,6 +144,10 @@ class KokoroSynthesizer(Synthesizer):
     def needs_download(self) -> bool:
         return not (self.model_path.is_file() and self.voices_path.is_file())
 
+    def download(self) -> None:
+        """Fetch the model files if missing, without loading them (voice/remote.py loads them elsewhere)."""
+        self._download()
+
     def prepare(self) -> str:
         downloaded = self.needs_download
         self._download()

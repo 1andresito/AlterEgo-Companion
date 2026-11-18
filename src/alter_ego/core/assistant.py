@@ -33,7 +33,7 @@ from ..providers.base import ChatMessage, Provider, ProviderError
 from ..settings.config import Config
 from .conversation import Conversation, Message, Role
 from .personality import Personality
-from .tools import FILES_INSTRUCTION
+from .tools import FILES_INSTRUCTION, mentions_files, strip_written_calls
 
 # ----- Expression tags -----
 
@@ -64,6 +64,9 @@ DEFAULT_CONTEXT_MESSAGES = 30
 RETURN_AFTER = timedelta(hours=1)
 
 
+_ROLE_WORD = "assistant"
+
+
 def split_expression_tag(text: str) -> tuple[Expression | None, str, bool]:
     """Separate a leading "[tag]" from the text.
 
@@ -74,6 +77,14 @@ def split_expression_tag(text: str) -> tuple[Expression | None, str, bool]:
     stripped = text.lstrip()
     if not stripped:
         return None, "", False
+    # Small models sometimes begin with their role's name ("assistant [shy] Oh..."): never shown.
+    lowered = stripped.lower()
+    if lowered.startswith(_ROLE_WORD) and not stripped[len(_ROLE_WORD):len(_ROLE_WORD) + 1].isalnum():
+        stripped = stripped[len(_ROLE_WORD):].lstrip(" \t\r\n:")
+        if not stripped:
+            return None, "", False
+    elif _ROLE_WORD.startswith(lowered):
+        return None, "", False  # Could still become the role's name.
     if not stripped.startswith("["):
         return None, stripped, True
 
@@ -101,6 +112,12 @@ def with_tag(expression: Expression | None, text: str) -> str:
 # listen, so stage directions like "*giggles*" and emojis are removed here too.
 
 _STAGE_DIRECTION = re.compile(r"\*[^*\n]*\*")
+# The same written in brackets ("[pauses, struggling to continue]"). Only brackets that start like a
+# stage direction go: other bracket text is the model's words. Mood tags are taken out before this.
+_DIRECTION_START = (r"(?:paus|sigh|smil|laugh|giggl|blush|whisper|nod|look|glanc|soft|quiet|nervous|stammer|"
+                    r"struggl|hesitat|sniff|cr(?:y|ies)|tear|gasp|fidget|beep|static|glitch|voice|tone)")
+_BRACKET_DIRECTION = re.compile(r"\[\s*" + _DIRECTION_START + r"[^\[\]\n]{0,80}\]", re.IGNORECASE)
+_OPEN_DIRECTION = re.compile(r"\[\s*" + _DIRECTION_START + r"[^\[\]\n]{0,80}$", re.IGNORECASE)
 _EMOJI = re.compile(
     "[\U0001F300-\U0001FAFF"   # pictographs, emoticons, symbols
     "\U0001F1E6-\U0001F1FF"    # flags
@@ -121,9 +138,12 @@ def clean_reply(text: str, final: bool) -> str:
     hides everything after it until the closing "*" arrives, so a stage
     direction never flashes on screen half-written.
     """
+    text = strip_written_calls(text, final)  # {"name": "read_file", ...} typed into the reply is never shown.
     text = _MARKDOWN_LINK.sub(lambda m: m.group(1) if m.group(1) == m.group(2) else f"{m.group(1)} ({m.group(2)})", text)
     text = _INNER_TAG.sub(" ", text)
     text = _STAGE_DIRECTION.sub("", text)
+    text = _BRACKET_DIRECTION.sub("", text)  # "[pauses, struggling to continue]"
+    text = _OPEN_DIRECTION.sub("", text)  # An unclosed one: hidden while it streams, dropped at the end.
     if "*" in text:
         if final:
             text = text.replace("*", "")
@@ -313,7 +333,12 @@ class ProviderResponder:
 
     def build_messages(self, personality: Personality, history: Sequence[Message]) -> list[ChatMessage]:
         system = personality.system_prompt + "\n\n" + TAG_INSTRUCTION
-        if self.provider.file_tools:
+        # The story facts the conversation is about: always the core, plus topics the user just mentioned.
+        recent = [m.text for m in history if m.role is Role.USER and m.text][-2:]
+        lore = personality.knowledge.prompt_for(recent)
+        if lore:
+            system += "\n\n" + lore
+        if self.provider.file_tools and recent and mentions_files(recent[-1]):
             system += "\n\n" + FILES_INSTRUCTION
         messages = [ChatMessage("system", system)]
         usable = [m for m in history if m.complete and m.text]
@@ -323,8 +348,12 @@ class ProviderResponder:
             usable = usable[-limit:]
         for message in usable:
             if message.role is Role.ASSISTANT:
+                # A tool call that once leaked into a saved reply would teach the model to write more.
+                text = strip_written_calls(message.text).strip()
+                if not text:
+                    continue
                 # Show earlier replies with their tags so the model keeps the convention.
-                messages.append(ChatMessage("assistant", with_tag(message.expression, message.text)))
+                messages.append(ChatMessage("assistant", with_tag(message.expression, text)))
             else:
                 messages.append(ChatMessage("user", message.text))
         return messages
@@ -410,6 +439,7 @@ class _PrepareWorker(QThread):
 class Assistant(QObject):
     state_changed = Signal(object)  # AssistantState
     status = Signal(str)            # Short progress text for the chat panel ("Starting Ollama..."); "" clears it
+    warmed_up = Signal()            # warm_up() or test_connection() finished, however it went
 
     def __init__(
         self,
@@ -477,6 +507,11 @@ class Assistant(QObject):
         if worker is not None:
             worker.deleteLater()
         self.status.emit("")
+        self.warmed_up.emit()
+
+    @property
+    def warming_up(self) -> bool:
+        return self._prepare_worker is not None
 
     def greet(self) -> None:
         """Say hello when the conversation is empty, or welcome the user back after a long pause.

@@ -21,6 +21,7 @@ import warnings
 DEVICE_ENV = "ALTER_EGO_DEVICE"
 CPU = "cpu"
 CUDA = "cuda"
+MIN_GPU_MEMORY = 3 * 1024 ** 3  # The voice needs about 1 GB on the card, and Ollama's model shares it.
 
 _lock = threading.Lock()
 _device: str | None = None
@@ -47,7 +48,14 @@ def compute_device() -> str:
                 import torch
 
                 if torch.cuda.is_available():
-                    _device, _name = CUDA, torch.cuda.get_device_name(0)
+                    name = torch.cuda.get_device_name(0)
+                    total = torch.cuda.get_device_properties(0).total_memory
+                    if isinstance(total, int) and total < MIN_GPU_MEMORY:
+                        # A small card would run out of memory next to the AI model: the CPU is safer.
+                        print(f"Alter Ego: {name} has {total / 1024 ** 3:.1f} GB of video memory; "
+                              "the voice uses the CPU.")
+                    else:
+                        _device, _name = CUDA, name
         except Exception as error:  # noqa: BLE001 - a broken CUDA install must only mean "use the CPU"
             print(f"Warning: could not check for a GPU ({type(error).__name__}: {error}); using the CPU.")
         return _device

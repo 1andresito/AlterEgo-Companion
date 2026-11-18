@@ -92,6 +92,15 @@ class SentenceTests(unittest.TestCase):
         self.assertEqual(sentences, ["One thing to say.", "and a tail without punctuation"])
         self.assertEqual(used, len("One thing to say. and a tail without punctuation"))
         self.assertEqual(take_sentences("   ", final=True), ([], 3))
+
+    def test_a_long_first_sentence_is_spoken_in_two_parts(self):
+        text = "Oh, I think the weather is really nice today, so maybe we could take a walk together. Then more. "
+        sentences, _ = take_sentences(text, final=False, first=True)
+        self.assertEqual(sentences[:2], ["Oh, I think the weather is really nice today,",
+                                         "so maybe we could take a walk together."])
+        self.assertEqual(len(take_sentences(text, final=True)[0]), 2)  # without first=True nothing is cut
+        short = "Hello, how are you today? "
+        self.assertEqual(take_sentences(short, final=False, first=True)[0], ["Hello, how are you today?"])
         self.assertEqual(take_sentences("", final=False), ([], 0))
 
     def test_numbers_quotes_and_newlines(self):

@@ -14,7 +14,9 @@ from typing import Callable
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import QMenu
 
+from .core import gpu_pack
 from .expressions import Expression
+from .gpu_prompt import GpuPackPrompt
 from .settings.config import Config
 from .voice import Speaker, character_model
 from .voice.player import DEFAULT_DEVICE, SpeechPlayer
@@ -29,6 +31,7 @@ def add_speak_menu(
     speaker: Speaker,
     config: Config,
     apply_settings: Callable[[], None],
+    gpu_prompt: GpuPackPrompt | None = None,
 ) -> QMenu:
     menu = parent.addMenu("Spoken replies")
 
@@ -91,4 +94,15 @@ def add_speak_menu(
 
     test = menu.addAction("Test my voice")
     test.triggered.connect(lambda: speaker.say(TEST_LINE, Expression.SHY_TALK))
+
+    # --- Where the voice runs, and the GPU pack (core/gpu_pack.py) ---
+    device = str(getattr(synthesizer, "device", "") or "")
+    if synthesizer is not None:
+        where = menu.addAction(f"My voice runs on: {device}" if device else "My voice runs on: (not loaded yet)")
+        where.setEnabled(False)
+    if gpu_prompt is not None and config.voice_enabled:
+        if gpu_pack.installed():
+            menu.addAction("Stop using the GPU pack...", gpu_prompt.remove)
+        elif gpu_pack.offered():
+            menu.addAction("Use my NVIDIA GPU for my voice (about 2.8 GB)...", gpu_prompt.offer)
     return menu

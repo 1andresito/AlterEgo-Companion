@@ -134,8 +134,43 @@ FILES_INSTRUCTION = (
     "not only in your Alter Ego folder. ~ is the user's home folder, so use paths like ~/Downloads/hello.txt, "
     "~/Desktop/notes.txt or ~/Documents/list.txt. A bare file name goes in your Alter Ego folder. "
     "The app asks the user before every change, so never refuse or ask for permission yourself: "
-    "call the tool, then say what happened."
+    "call the tool, then say what happened. Use the file tools only when the user asks about files; "
+    "to answer a question, just talk. Never write a tool call as text."
 )
+
+# Small models call the file tools for anything once they are offered (looking up "Mondo_Owada.txt" to
+# answer a question), so they are offered only when the user's message is about files.
+_FILE_WORDS = re.compile(
+    r"\b(?:files?|folders?|directory|directories|documents?|downloads?|desktop|txt|notes?|"
+    r"save|saved|saving|rename|delete|path)\b"
+    r"|[A-Za-z~:][\\/][A-Za-z]"       # a path such as ~/Downloads or C:\Users (not 3/4)
+    r"|\.(?:txt|md|csv|json|log|py|html?|docx?)\b",  # a file name such as notes.txt
+    re.IGNORECASE,
+)
+
+
+def mentions_files(text: str) -> bool:
+    """Is this message about files, so the file tools are worth offering?"""
+    return bool(_FILE_WORDS.search(text or ""))
+
+
+# The same for the web tools: offered, a small model fetches a page even to answer "hello". They are
+# offered when the message asks for something only the internet knows; a missed search costs less
+# than every answer waiting on a page.
+_WEB_WORDS = re.compile(
+    r"\b(?:search|searching|look\s+up|google|internet|online|web|website|wiki|wikipedia|news|headlines?|"
+    r"weather|forecast|temperature|latest|recent|recently|current|currently|today|tonight|tomorrow|"
+    r"yesterday|this\s+(?:week|month|year)|right\s+now|price|prices|cost|stock|score|won|winner|"
+    r"release\s+date|released|link|url)\b"
+    r"|https?://|www\.|\b20\d\d\b",
+    re.IGNORECASE,
+)
+
+
+def wants_web(text: str) -> bool:
+    """Does this message ask for something online, so the web tools are worth offering?"""
+    return bool(_WEB_WORDS.search(text or ""))
+
 
 # Folder names that mean the user's own folder when a path starts with them ("Downloads/hello.txt").
 USER_FOLDERS = ("Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos")
@@ -279,9 +314,12 @@ class ToolBox:
     def enabled(self) -> bool:
         return self.internet or self.files
 
-    def specs(self) -> list[dict]:
-        """The tools the model may call, in Ollama/OpenAI function format."""
-        return (WEB_TOOLS if self.internet else []) + (FILE_TOOLS if self.files else [])
+    def specs(self, request: str | None = None) -> list[dict]:
+        """The tools the model may call, in Ollama/OpenAI function format. With `request` (what the
+        user just said), each kind is offered only when the request is about it (see wants_web)."""
+        web = self.internet and (request is None or wants_web(request))
+        files = self.files and (request is None or mentions_files(request))
+        return (WEB_TOOLS if web else []) + (FILE_TOOLS if files else [])
 
     def run(self, name: str, args: dict[str, Any] | str | None) -> str:
         """Run one tool and return its result as text. Never raises."""
@@ -440,3 +478,97 @@ class ToolBox:
             return DENIED_MESSAGE
         target.mkdir(parents=True, exist_ok=True)
         return f"Made the folder {target}."
+
+
+# ----- Tool calls written as text -----
+# Small models (llama3.2 3B among them) sometimes write a tool call into the reply as
+# JSON, e.g. {"name": "read_file", "parameters": {"path": "notes.txt"}}, instead of
+# using the tool-call field, anywhere in the reply and sometimes with a name that is
+# no tool at all ({"name": "talk", ...}). The filter takes such objects out of the
+# text: providers run the ones that name a tool on offer, and clean_reply drops any
+# that get past them, so a reply always reads as plain words.
+
+_DECODER = json.JSONDecoder()
+MAX_HELD_CHARS = 2000  # Text held back while it might still become a call; longer is let through.
+
+
+def _could_be_call(held: str) -> bool:
+    """Is `held` (starting with "{") the start of {"name": ...} or {"function": ...}, or still on its way?"""
+    start = "{" + held[1:].lstrip()
+    return any(target.startswith(start) or start.startswith(target) for target in ('{"name"', '{"function"'))
+
+
+def call_in_json(data: object) -> dict | None:
+    """{"name": ..., "arguments": {...}} when `data` is a tool call written out, else None."""
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("function"), dict):  # {"function": {"name": ..., "arguments": ...}}
+        data = data["function"]
+    name = data.get("name")
+    if not isinstance(name, str) or not ("parameters" in data or "arguments" in data):
+        return None
+    args = data.get("parameters", data.get("arguments"))
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {}
+    return {"name": name, "arguments": args if isinstance(args, dict) else {}}
+
+
+class WrittenCallFilter:
+    """Passes streamed words through and pulls out the tool calls written into them as JSON.
+
+    Text from a "{" on is held back only while it could still become a call, so
+    ordinary words (and ordinary braces) are not delayed.
+    """
+
+    def __init__(self) -> None:
+        self.held = ""
+        self.calls: list[dict] = []
+
+    def feed(self, piece: str) -> str:
+        text, self.held = self.held + piece, ""
+        shown: list[str] = []
+        while text:
+            start = text.find("{")
+            if start < 0:
+                shown.append(text)
+                break
+            shown.append(text[:start])
+            text = text[start:]
+            if not _could_be_call(text):
+                shown.append("{")
+                text = text[1:]
+                continue
+            try:
+                data, end = _DECODER.raw_decode(text)
+            except json.JSONDecodeError:
+                if len(text) > MAX_HELD_CHARS:  # Too long to be a call still arriving: let it through.
+                    shown.append("{")
+                    text = text[1:]
+                    continue
+                self.held = text  # Not finished yet: wait for more.
+                break
+            call = call_in_json(data)
+            if call is not None:
+                self.calls.append(call)
+            else:
+                shown.append(text[:end])
+            text = text[end:]
+        return "".join(shown)
+
+    def flush(self) -> str:
+        """The end of the reply: a call left unfinished is dropped, anything else is shown."""
+        held, self.held = self.held, ""
+        return "" if len(held.strip()) > 1 and _could_be_call(held) else held
+
+
+def strip_written_calls(text: str, final: bool = True) -> str:
+    """`text` without tool calls written as JSON. While streaming (`final` False), a call
+    still arriving is hidden too, so it never flashes on screen half-written."""
+    if "{" not in text:
+        return text
+    calls = WrittenCallFilter()
+    shown = calls.feed(text)
+    return shown + calls.flush() if final else shown

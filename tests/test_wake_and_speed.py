@@ -27,7 +27,7 @@ from alter_ego.providers.base import ChatMessage, Provider, ProviderError  # noq
 from alter_ego.settings.config import Config  # noqa: E402
 from alter_ego.speech.handsfree import HandsFreeState  # noqa: E402
 from alter_ego.voice import device  # noqa: E402
-from alter_ego.voice.speaker import Speaker, VoiceStyle  # noqa: E402
+from alter_ego.voice.speaker import LOADING_STATUS, WARM_UP_LINE, Speaker, VoiceStyle  # noqa: E402
 from alter_ego.voice.synthesizer import SynthesisError  # noqa: E402
 from alter_ego.voice.text import speakable  # noqa: E402
 import test_handsfree  # noqa: E402  (a module import, so its test class is not collected twice)
@@ -74,6 +74,16 @@ class DeviceTests(unittest.TestCase):
             device.use_cpu()
             self.assertEqual(device.compute_device(), device.CPU)
 
+    def test_a_card_with_little_video_memory_leaves_the_voice_on_the_cpu(self):
+        torch = mock.MagicMock()
+        torch.cuda.is_available.return_value = True
+        torch.cuda.get_device_name.return_value = "Small GPU"
+        torch.cuda.get_device_properties.return_value.total_memory = 2 * 1024 ** 3
+        device._reset_for_tests()
+        with mock.patch.dict(sys.modules, {"torch": torch}), mock.patch.dict(os.environ, {device.DEVICE_ENV: ""}):
+            self.assertEqual(device.compute_device(), device.CPU)
+        device._reset_for_tests()
+
 
 class PreloadTests(unittest.TestCase):
     def make(self, **kwargs):
@@ -88,18 +98,25 @@ class PreloadTests(unittest.TestCase):
         self.addCleanup(speaker.shutdown)
         return speaker, player, engine, log
 
-    def test_preload_is_silent_and_renders_the_quick_lines(self):
+    def test_preload_shows_it_is_loading_and_renders_the_quick_lines(self):
         speaker, player, engine, log = self.make()
         speaker.quick_lines = [("Yes?", Expression.HAPPY)]
         self.assertTrue(speaker.preload())
-        self.assertTrue(process_events_until(lambda: speaker.has_ready("Yes?")))
+        self.assertTrue(process_events_until(lambda: speaker.has_ready("Yes?") and speaker._prepare_worker is None))
         self.assertEqual(engine.prepared, 1)
-        self.assertEqual((log["status"], log["prepared"], log["failed"]), ([], [], []))
+        # Only the "loading" note and its clearing; no chat message about it.
+        self.assertEqual((log["status"], log["prepared"], log["failed"]), ([LOADING_STATUS, ""], [], []))
 
         rendered = len(engine.spoken)
         self.assertTrue(speaker.say("Yes?", Expression.HAPPY))
         self.assertTrue(player.playing)  # at once, from the ready clip
         self.assertEqual(len(engine.spoken), rendered)  # no new synthesis
+
+    def test_preload_warms_the_voice_up_even_without_quick_lines(self):
+        speaker, player, engine, log = self.make()
+        self.assertTrue(speaker.preload())
+        self.assertTrue(process_events_until(lambda: speaker._prepare_worker is None))
+        self.assertEqual([text for text, _ in engine.spoken], [WARM_UP_LINE])  # the slow first conversion
 
     def test_preload_never_downloads(self):
         speaker, player, engine, log = self.make()

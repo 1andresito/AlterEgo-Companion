@@ -18,18 +18,41 @@ _SENTENCE_END = re.compile(r"[.!?…]+[\"'”’)\]]*(?=\s)|\n+")
 MIN_CHARS = 12
 # Long sentences are fine for the model, but the first one should start playing soon.
 MAX_CHARS = 400
+# The first piece of a reply is what everyone waits for (the chat types along with the voice), so a
+# long first sentence is spoken in two parts, cut at a comma: on a CPU about 1 s to the first sound
+# instead of 3. Neither part is left shorter than FIRST_MIN_CHARS, which would sound choppy.
+FIRST_SPLIT_CHARS = 60
+FIRST_MIN_CHARS = 25
 # A stammered start of a word: one to three letters and a hyphen, followed by the same letters.
 # Real prefixes ("re-read", "pre-prepared") are not stammers and are left alone.
 _STAMMER = re.compile(r"\b(?!(?:re|co|de|un|ex|bi|pre|pro|sub|non|mid|tri|anti)-)([A-Za-z]{1,3})-(?=\1)", re.IGNORECASE)
 
 
-def take_sentences(text: str, final: bool) -> tuple[list[str], int]:
+def take_sentences(text: str, final: bool, first: bool = False) -> tuple[list[str], int]:
     """Split the complete sentences off the front of `text`.
 
     Returns (sentences, consumed): `consumed` is the number of characters of
     `text` used, so the caller can pass text[consumed:] (plus new text) next
-    time. With `final`, all of `text` is consumed.
+    time. With `final`, all of `text` is consumed. `first` means `text` starts
+    the reply: a long first sentence is then cut in two at a comma.
     """
+    sentences, consumed = _take_sentences(text, final)
+    if first and sentences:
+        sentences[:1] = _split_first(sentences[0])
+    return sentences, consumed
+
+
+def _split_first(sentence: str) -> list[str]:
+    if len(sentence) <= FIRST_SPLIT_CHARS:
+        return [sentence]
+    for match in re.finditer(r"[,;] ", sentence):
+        cut = match.start() + 1
+        if cut >= FIRST_MIN_CHARS and len(sentence) - cut >= FIRST_MIN_CHARS:
+            return [sentence[:cut].strip(), sentence[cut:].strip()]
+    return [sentence]
+
+
+def _take_sentences(text: str, final: bool) -> tuple[list[str], int]:
     sentences: list[str] = []
     start = 0
     pending_start = 0  # Start of a short fragment waiting to be joined with the next sentence.

@@ -38,7 +38,7 @@ AlterEgo-Companion/
 │   └── release.yml            # Builds and publishes the downloads when a version tag is pushed
 ├── assets/
 │   ├── animations/            # Expression PNGs (one complete image per expression)
-│   ├── personality/           # alter_ego.json
+│   ├── personality/           # alter_ego.json, knowledge.json (the Danganronpa facts)
 │   └── voice/                 # Alter Ego's one voice: alter_ego.pth and .index (Git LFS)
 ├── data/                      # Created at runtime when run from source, gitignored
 ├── docs/                      # User reference: settings, running from source, customizing
@@ -56,6 +56,9 @@ AlterEgo-Companion/
 │   ├── speak_menu.py          # "Spoken replies" submenu: on/off, volume, speakers
 │   ├── memory_menu.py         # "Memory" submenu: on/off, forget everything
 │   ├── tool_approval.py       # Asks the user before each file change (an on-top Yes/No dialog)
+│   ├── single_instance.py     # Only one Alter Ego: a lock file, and "show yourself" to the running copy
+│   ├── loading_window.py      # The window shown while the AI model and the voice wake up
+│   ├── gpu_prompt.py          # Spoken replies -> Use my NVIDIA GPU: asks, downloads with progress, removes
 │   ├── update_prompt.py       # "There's a new version of me": asks, shows the download, quits for the update
 │   ├── character.py           # Desktop window: drawing, effects, dragging, menus
 │   ├── chat.py                # Chat panel: history, day dividers, input, talk button, typewriter
@@ -63,10 +66,13 @@ AlterEgo-Companion/
 │   ├── reactions.py           # Makes the face follow the conversation and the microphone
 │   ├── core/                  # No widgets in here
 │   │   ├── personality.py     # Loads the personality JSON
+│   │   ├── knowledge.py       # What Alter Ego knows of its story: the core plus topics picked by keyword
 │   │   ├── conversation.py    # Message + Conversation history
 │   │   ├── memory.py          # MemoryStore: saves the Conversation to SQLite, restores it
 │   │   ├── tools.py           # ToolBox: web search, reading pages, files (each change approved)
 │   │   ├── first_run.py       # What is missing (SetupPlan) and getting it (SetupRunner, worker thread)
+│   │   ├── machine.py         # This computer: memory, an NVIDIA driver, this process's memory
+│   │   ├── gpu_pack.py        # The GPU pack: CUDA PyTorch for the downloaded app (download, check, prefer_pack)
 │   │   ├── updates.py         # New release? Download it and hand over to the new version (UpdateJob)
 │   │   └── assistant.py       # Assistant (worker thread, expression tags), responders
 │   ├── providers/             # AI backends (standard library only)
@@ -97,11 +103,13 @@ AlterEgo-Companion/
 │   │   ├── rvc_local.py       # The character voice: Kokoro converted with the RVC model
 │   │   ├── device.py          # GPU or CPU for the voice, decided per computer
 │   │   ├── player.py          # SpeechPlayer (Qt Multimedia audio sink)
-│   │   └── speaker.py         # Speaker: conversation -> sentences -> worker -> player, in order
+│   │   ├── speaker.py         # Speaker: conversation -> sentences -> worker -> player, in order
+│   │   ├── remote.py          # RemoteVoice: the voice run in a helper process, closed when quiet on small computers
+│   │   └── server.py          # The helper itself: Alter Ego started with --voice-server
 │   └── settings/
 │       └── config.py          # DEFAULTS, loads/saves config.json, assets_dir(), data_dir()
 ├── tests/                     # One file per feature area, fakes only (see CODE_STYLE.md)
-├── main.py                    # Entry point; --tool-server runs the file-tool server; log file when packaged
+├── main.py                    # Entry point; --tool-server and --voice-server run helpers; log file when packaged
 ├── requirements.txt
 ├── requirements-character-voice.txt  # The RVC converter and PyTorch (Python 3.10 to 3.13)
 ├── CHANGELOG.md
@@ -113,11 +121,11 @@ AlterEgo-Companion/
 
 1. The chat panel calls `Assistant.send(text)`.
 2. The `Assistant` adds the user's message to the `Conversation`, switches to `THINKING`, and starts a worker thread. The worker first lets the `Responder` prepare (with Ollama: start the server), then asks it for a reply. Network waits happen on that thread, so the desktop stays responsive. **Test connection** and the warm-up after choosing a provider run on the same kind of worker.
-3. `ProviderResponder` builds the prompt (personality system prompt + tag instruction + recent history) and streams text from the `Provider`. If the model asks for a tool (a web search, writing a file), the provider runs it from the `ToolBox`, reports it in the chat ("Searching the web..."), and lets the model continue with the result. The offline responder plugs into the same slot.
+3. `ProviderResponder` builds the prompt (personality system prompt + tag instruction + the story knowledge the last two user messages are about + recent history) and streams text from the `Provider`. If the model asks for a tool (a web search, writing a file), the provider runs it from the `ToolBox`, reports it in the chat ("Searching the web..."), and lets the model continue with the result. The offline responder plugs into the same slot.
 4. As pieces arrive, the `Assistant` strips the leading expression tag, adds the reply to the `Conversation` and keeps updating its text (`message_updated`).
 5. The chat panel types the growing text out. `CharacterReactions` sets the face as soon as the tag is known. When typing finishes, it waits a few seconds and returns the face to Happy.
 6. The `MemoryStore` listens to the same signals: it inserts each new message, writes a streamed reply once it is complete, and marks the conversation as ended when the chat is cleared. At start-up it loads the last conversation before the windows are connected.
-7. The `Speaker` listens too. It cuts each reply into sentences as the text grows, synthesizes them on a worker thread and plays them in order. It emits `sentence_started(message, end, seconds)`, which paces the chat's typewriter, and `finished(message)` after the last clip. Only then does the chat emit `typing_finished`.
+7. The `Speaker` listens too. Its engine is a `RemoteVoice`: the sentences are spoken by the voice helper process (`voice/server.py`), which holds Kokoro, PyTorch and the RVC converter, so the app's own process stays small. It cuts each reply into sentences as the text grows, synthesizes them on a worker thread and plays them in order. It emits `sentence_started(message, end, seconds)`, which paces the chat's typewriter, and `finished(message)` after the last clip. Only then does the chat emit `typing_finished`.
 8. Voice comes in from the side. The global key (or the talk button) drives `PushToTalk`, which records, transcribes on a worker thread and emits the text. The chat then calls `Assistant.send(text)` as if it had been typed. `HandsFree` streams the microphone through the `UtteranceDetector`, matches the wake phrase with a small model, and emits `woke` and then `command(text)`.
 
 ## First run
@@ -134,6 +142,8 @@ AlterEgo-Companion/
 - While a provider has the file tools (`Provider.file_tools`), `ProviderResponder.build_messages` adds `FILES_INSTRUCTION` to the system prompt. Without it, small models read "Alter Ego folder" in the tool list as a rule and refuse to write elsewhere.
 - Every file change, and a read outside the Alter Ego folder (once per folder), is described as an `Access` (kind, path, new content) and asked through `tool_approval.ToolApproval.ask()`. The worker thread waits while the GUI shows an on-top Yes/No dialog. Ollama reaches it directly; the tool server reaches it through `ApprovalServer` (127.0.0.1, one-time token).
 - `tools.auto_edit` (off by default) skips the question for changes, except in `ToolBox.is_protected` places: system folders and Alter Ego's own program and data folders. Reads always ask.
+- Tools are offered only when the user's message is about them (`mentions_files`, `wants_web` in `core/tools.py`). A small model offered tools uses them for everything, even fetching a page to answer "hello".
+- A tool call the model types into its reply as JSON (`{"name": "read_file", ...}`) is taken out by `WrittenCallFilter`: the provider runs it if it names a tool on offer, and `clean_reply` drops whatever gets past, so no JSON is ever shown or saved. Old replies with JSON are left out of the history sent to the model.
 - Tools never raise and cap their results.
 
 ## Outputs in more detail
@@ -185,5 +195,7 @@ The folder holds:
 - `claude_code/session`
 - `claude_code/mcp.json`: how Claude Code starts the file-tool server
 - `voices/`: the Kokoro files, plus the RVC base models in `rvc/`
+- `gpu/`: the GPU pack, only when the user downloaded it (`site-packages/` with CUDA torch, and an `ok` marker)
+- `alter_ego.lock`: held while Alter Ego runs, so a second start shows the running copy instead
 
 The voice model itself is in `assets/voice/`, not here. Whisper models go to the Hugging Face cache. The AI's file tools write only where the user said yes to each change (or anywhere outside protected folders, with `tools.auto_edit` on). Nothing else is written anywhere.

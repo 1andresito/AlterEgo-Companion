@@ -46,6 +46,12 @@ EXPRESSION_SPEED: dict[Expression, float] = {
     Expression.SWEAT_TALK: 1.02,
 }
 
+# Shown in the chat while the voice loads at start-up, so the user knows why the first reply may wait.
+LOADING_STATUS = "Waking up... loading my voice"
+# Rendered once after loading when there are no quick lines: the first conversion is the slowest
+# (seconds), and it should not be the first real sentence.
+WARM_UP_LINE = "Hello."
+
 NO_SYNTHESIZER_MESSAGE = "Spoken replies are switched off. Turn them on under Spoken replies in the menu."
 
 
@@ -135,7 +141,7 @@ class _PrepareWorker(QThread):
         super().__init__(parent)
         self._synthesizer = synthesizer
         self._style = style
-        self._phrases = tuple(phrases)
+        self._phrases = tuple(phrases) or ((WARM_UP_LINE, None),)
 
     def run(self) -> None:
         try:
@@ -161,6 +167,7 @@ class Speaker(QObject):
     finished = Signal(object)                   # Message (or None for say()): nothing more to play for it
     failed = Signal(str)                        # A problem worth telling the user about (in character)
     prepared = Signal(str)                      # Result of prepare()
+    loading_finished = Signal()                 # prepare() or preload() ended, however it went
 
     def __init__(self, player: SpeechPlayer, synthesizer: Synthesizer | None = None, parent: QObject | None = None):
         super().__init__(parent)
@@ -310,6 +317,8 @@ class Speaker(QObject):
         synthesizer = self._synthesizer
         if not self.enabled or synthesizer is None or synthesizer.needs_download or self._prepare_worker is not None:
             return False
+        if not synthesizer.ready:
+            self.status.emit(LOADING_STATUS)
         return self._start_prepare(self.quick_lines if phrases is None else phrases, quiet=True)
 
     def _start_prepare(self, phrases: Sequence[tuple[str, Expression | None]], quiet: bool) -> bool:
@@ -348,7 +357,7 @@ class Speaker(QObject):
         if len(text) < self._consumed:
             self._consumed = len(text)  # The final clean-up shortened the text; nothing new to say.
         new_text = text[self._consumed:]
-        sentences, used = take_sentences(new_text, final=message.complete)
+        sentences, used = take_sentences(new_text, final=message.complete, first=self._consumed == 0)
         self._queue_sentences(sentences, self._consumed, used, message.expression)
         self._consumed += used
         if message.complete:
@@ -365,7 +374,7 @@ class Speaker(QObject):
         self._set_state(SpeakingState.SPEAKING)
 
     def _queue_text(self, text: str, final: bool, expression: Expression | None) -> None:
-        sentences, used = take_sentences(text, final=final)
+        sentences, used = take_sentences(text, final=final, first=True)
         self._queue_sentences(sentences, 0, used, expression)
         if final:
             self._text_done = True
@@ -483,9 +492,14 @@ class Speaker(QObject):
         self._prepare_worker = None
         if worker is not None:
             worker.deleteLater()
-        if not self._quiet_prepare:
-            self.status.emit("")
+        self.status.emit("")
         self._quiet_prepare = False
+        self.loading_finished.emit()
+
+    @property
+    def loading(self) -> bool:
+        """The voice is being loaded (or downloaded) right now."""
+        return self._prepare_worker is not None
 
     # ----- Helpers -----
 

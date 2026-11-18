@@ -31,7 +31,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .core.first_run import MODEL_CHOICES, STEP_LABELS, SetupChoices, SetupPlan, SetupRunner, SetupStep
+from .core.first_run import (
+    GPU_PACK_SIZE_GB, MODEL_CHOICES, STEP_LABELS, SetupChoices, SetupPlan, SetupRunner, SetupStep,
+)
 from .providers import ollama_install
 
 WIDTH = 500
@@ -156,6 +158,13 @@ class SetupWizard(QDialog):
             self._voice_box.setChecked(True)
             layout.addWidget(self._voice_box)
 
+        # The GPU pack is big and optional: offered on NVIDIA computers, never ticked for the user.
+        self._gpu_box: QCheckBox | None = None
+        if plan.gpu_offered:
+            self._gpu_box = QCheckBox(
+                f"Use my NVIDIA GPU for my voice: about 3 times faster (about {GPU_PACK_SIZE_GB:g} GB)")
+            layout.addWidget(self._gpu_box)
+
         layout.addStretch(1)
         layout.addWidget(_label("You can come back here any time: AI -> Set up Ollama and my voice...", "hint"))
         buttons = QHBoxLayout()
@@ -184,7 +193,8 @@ class SetupWizard(QDialog):
         if self._model_combo is not None and self._model_combo.isEnabled():
             model = str(self._model_combo.currentData() or "")
         voice = self._voice_box is not None and self._voice_box.isChecked()
-        return SetupChoices(install_ollama=install, model=model, voice=voice)
+        gpu = self._gpu_box is not None and self._gpu_box.isChecked()
+        return SetupChoices(install_ollama=install, model=model, voice=voice, gpu=gpu)
 
     def _start(self) -> None:
         self._choices = self.choices()

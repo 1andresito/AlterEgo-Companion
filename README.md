@@ -8,7 +8,7 @@ Inspired by the digital character Alter Ego from Danganronpa. Built with Python 
 
 > This is an unofficial, non-commercial fan project. It is not affiliated with or endorsed by Spike Chunsoft or the Danganronpa franchise.
 
-**Current version: v0.8.0** ([what's new](CHANGELOG.md))
+**Current version: v0.9.0** ([what's new](CHANGELOG.md))
 
 ---
 
@@ -148,7 +148,9 @@ Uninstalling Alter Ego keeps this data folder, so your memories survive an updat
 
 **No voice.** Check **Spoken replies** → **Speak replies out loud** and the volume. If the voice files are missing, choose **Spoken replies** → **Download my voice**. **Test my voice** plays a line.
 
-**Slow replies.** Pick a smaller model (**Llama 3.2 1B**), or check **AI** → **Model**. With Claude, set `"effort": "low"` in the settings.
+**Slow replies.** Pick a smaller model (**Llama 3.2 1B**), or check **AI** → **Model**. With Claude, set `"effort": "low"` in the settings. On a computer with an NVIDIA graphics card, **Spoken replies** → **Use my NVIDIA GPU for my voice** makes the voice about 3 times faster (a one-time download of about 2.8 GB, Windows only).
+
+**Memory use.** Alter Ego itself uses about 200–300 MB. Its voice runs in a separate helper process that needs another 2–3 GB while it is loaded. On computers with 16 GB of memory or more the voice stays loaded, so replies are quick. With less, it is closed after 10 quiet minutes and loads again (a few seconds) when it next speaks. Task Manager shows the two together under Alter Ego.
 
 **Something else.** The log file usually says what went wrong. [Open an issue](https://github.com/1andresito/AlterEgo-Companion/issues) and attach it.
 
@@ -163,7 +165,8 @@ Uninstalling Alter Ego keeps this data folder, so your memories survive an updat
 - [x] v0.7.0: easy install: downloads on the Releases page and a first-run setup
 - [x] v0.7.1: updates from inside the app, and a CRT switch-on and switch-off
 - [x] v0.8.0: files anywhere on your computer, with a question before every change
-- [ ] v0.9.0: reminders and notifications: Alter Ego speaks up on its own
+- [x] v0.9.0: lighter on memory, one copy at a time, a loading window, and an optional NVIDIA GPU pack for the voice
+- [ ] v0.10.0: reminders and notifications: Alter Ego speaks up on its own
 - [ ] Later: long-term recall of older conversations
 
 ---

@@ -122,3 +122,12 @@ Alter Ego has one voice, fixed in the program. These keys only say whether it sp
 - `models_dir`: where the downloaded voice files are kept. Empty means the `voices` folder in the data folder.
 
 Old keys such as `kokoro_voice`, `rvc_model` or `pitch` from earlier versions are ignored.
+
+### Decided per computer, not in the settings
+
+Alter Ego runs on big desktops and small laptops, so a few things are worked out on each computer:
+
+- **Where the voice runs.** The voice uses an NVIDIA graphics card when PyTorch can use it and the card has at least 3 GB of video memory, else the processor. The downloaded app can use the card only after **Spoken replies** → **Use my NVIDIA GPU for my voice** (the GPU pack, about 2.8 GB, Windows). **Spoken replies** shows where the voice runs. Ollama uses the graphics card by itself.
+- **Whether the voice stays loaded.** The voice runs in a helper process. With 16 GB of memory or more it stays loaded; with less it is closed after 10 quiet minutes, so its memory goes back to the computer. On any computer it is restarted when it grows past 3.5 GB.
+
+For testing, environment variables override these: `ALTER_EGO_DEVICE=cpu` (or `cuda`) for where the voice runs, `ALTER_EGO_KEEP_VOICE=1` (or `0`) for keeping it loaded.

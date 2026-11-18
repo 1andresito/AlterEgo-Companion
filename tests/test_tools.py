@@ -27,6 +27,7 @@ from PySide6.QtCore import QCoreApplication  # noqa: E402
 
 from alter_ego.app import EngineCache  # noqa: E402
 from alter_ego.core.assistant import ProviderResponder  # noqa: E402
+from alter_ego.core.conversation import Message, Role  # noqa: E402
 from alter_ego.core.personality import Personality  # noqa: E402
 from alter_ego.core.tools import (  # noqa: E402
     CREATE, DENIED_MESSAGE, FILES_INSTRUCTION, MAKE_FOLDER, MAX_RESULT_CHARS, READ, READ_DENIED_MESSAGE, REPLACE, Access, ToolBox,
@@ -238,6 +239,17 @@ class ToolOllamaHandler(BaseHTTPRequestHandler):
             written = json.dumps({"name": "write_file", "parameters": {"path": "t.txt", "content": "typed"}})
             lines = [{"message": {"role": "assistant", "content": "[shy] " + written[:9]}, "done": False},
                      {"message": {"role": "assistant", "content": written[9:]}, "done": True}]
+        elif request.get("model") == "midtext" and request.get("tools") and not tool_messages:
+            written = json.dumps({"name": "read_file", "parameters": {"path": "talent.txt"}})
+            lines = [{"message": {"role": "assistant", "content": "Sure! Let me check. " + written[:20]}, "done": False},
+                     {"message": {"role": "assistant", "content": written[20:]}, "done": True}]
+        elif request.get("model") == "talky":
+            asked_for_words = request["messages"][-1]["role"] == "system"
+            content = "[happy] Hello there!" if asked_for_words else '[talk] {"name": "talk", "parameters": {}}'
+            lines = [{"message": {"role": "assistant", "content": content}, "done": True}]
+        elif request.get("model") == "stubborn":
+            written = json.dumps({"name": "read_file", "parameters": {"path": "x.txt"}})
+            lines = [{"message": {"role": "assistant", "content": "Hmm. " + written}, "done": True}]
         elif request.get("tools") and not tool_messages:
             call = {"function": {"name": "write_file", "arguments": {"path": "hi.txt", "content": "hi"}}}
             lines = [{"message": {"role": "assistant", "content": "[happy] Okay!", "tool_calls": [call]}, "done": True}]
@@ -284,13 +296,54 @@ class OllamaToolTests(unittest.TestCase):
     def test_tool_call_written_as_json_text_is_run_not_shown(self):
         provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
         text = "".join(provider.stream_reply([ChatMessage("user", "make a file")], "texty", lambda: False))
-        self.assertEqual(text, f"Done: Saved {(Path(self.temp.name) / 't.txt').resolve()}.")
+        self.assertEqual(text, f"[shy] Done: Saved {(Path(self.temp.name) / 't.txt').resolve()}.")
         self.assertEqual((Path(self.temp.name) / "t.txt").read_text(encoding="utf-8"), "typed")
+
+    def test_a_call_written_mid_sentence_is_run_and_not_shown(self):
+        provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
+        text = "".join(provider.stream_reply([ChatMessage("user", "check the talent.txt file")], "midtext", lambda: False))
+        self.assertTrue(text.startswith("Sure! Let me check. Done: There is no file"), text)
+        self.assertNotIn("{", text)
+        self.assertEqual(ToolOllamaHandler.requests[1]["messages"][-1]["tool_name"], "read_file")
+
+    def test_a_call_naming_no_tool_is_dropped_and_the_model_answers_in_words(self):
+        provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
+        text = "".join(provider.stream_reply([ChatMessage("user", "hello")], "talky", lambda: False))
+        self.assertNotIn("{", text)
+        self.assertIn("Hello there!", text)
+        self.assertNotIn("tools", ToolOllamaHandler.requests[-1])  # the try in words offers no tools
+
+    def test_json_in_the_last_round_never_reaches_the_chat(self):
+        provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
+        text = "".join(provider.stream_reply([ChatMessage("user", "read the file x.txt")], "stubborn", lambda: False))
+        self.assertNotIn("{", text)
+        self.assertTrue(text.startswith("Hmm."), text)
+        self.assertEqual(len(ToolOllamaHandler.requests), 5)  # four tool rounds, then one without tools
+
+    def test_load_and_chat_ask_for_the_same_context_size(self):
+        provider = OllamaProvider(self.base_url, auto_start=False)
+        provider.load_model("m")
+        "".join(provider.stream_reply([ChatMessage("user", "hi")], "m", lambda: False))
+        load, chat = ToolOllamaHandler.requests
+        self.assertEqual(load["options"]["num_ctx"], chat["options"]["num_ctx"])
+        self.assertGreaterEqual(chat["options"]["num_ctx"], 8192)
 
     def test_ordinary_text_is_not_held_back(self):
         provider = OllamaProvider(self.base_url, auto_start=False, tools=ToolBox(internet=True, files=False))
-        text = "".join(provider.stream_reply([ChatMessage("user", "hi")], "plain", lambda: False))
+        text = "".join(provider.stream_reply([ChatMessage("user", "search the news")], "plain", lambda: False))
         self.assertTrue(text.startswith("[happy] Okay! Done: Error: working with files is switched off"), text)
+
+    def test_tools_are_offered_only_when_the_message_is_about_them(self):
+        provider = OllamaProvider(self.base_url, auto_start=False, tools=ToolBox(internet=True, files=True))
+        offered = []
+        for text in ("hello", "Who is Mondo?", "what's the weather today?", "save this in notes.txt"):
+            "".join(provider.stream_reply([ChatMessage("user", text)], "plain", lambda: False))
+            offered.append(sorted({spec["function"]["name"].split("_")[0] for spec in ToolOllamaHandler.requests[-1].get("tools", [])}))
+            ToolOllamaHandler.requests.clear()
+        # A small model offered tools uses them for anything (a web page to answer "hello").
+        self.assertEqual(offered[:2], [[], []])
+        self.assertEqual(offered[2], ["read", "web"])
+        self.assertEqual(offered[3], ["list", "make", "read", "write"])
 
     def test_model_without_tool_support_just_chats(self):
         provider = OllamaProvider(self.base_url, auto_start=False, tools=self.tools)
@@ -344,12 +397,16 @@ class ClaudeToolTests(unittest.TestCase):
         self.assertFalse(build_toolbox(config).run("write_file", {"path": "x", "content": ""}).startswith("Saved"))
         # The prompt tells the model it may write anywhere, but only while it really has the file tools.
         self.assertTrue(ollama.file_tools)
-        prompt = ProviderResponder(ollama, config).build_messages(Personality.default(), [])[0].content
+        about_files = [Message(Role.USER, "put a note in my Downloads folder")]
+        prompt = ProviderResponder(ollama, config).build_messages(Personality.default(), about_files)[0].content
         self.assertIn(FILES_INSTRUCTION, prompt)
+        chat = [Message(Role.USER, "who is Mondo?")]
+        self.assertNotIn(FILES_INSTRUCTION, ProviderResponder(ollama, config).build_messages(Personality.default(), chat)[0].content)
         self.assertTrue(create_provider("claude_code", config, approval_address="1:t").file_tools)
         off = Config(Path("unused.json"), {"tools": {"internet": True, "files": False}})
         off_provider = create_provider("ollama", off, approve=lambda _: True)
-        self.assertNotIn(FILES_INSTRUCTION, ProviderResponder(off_provider, off).build_messages(Personality.default(), [])[0].content)
+        self.assertNotIn(FILES_INSTRUCTION,
+                         ProviderResponder(off_provider, off).build_messages(Personality.default(), about_files)[0].content)
         self.assertFalse(build_toolbox(config).auto_edit)  # auto-edit is off unless switched on
         self.assertFalse(create_provider("claude_code", config, approval_address="1:t")._auto_edit)
         on = Config(Path("unused.json"), {"tools": {"files": True, "auto_edit": True}})

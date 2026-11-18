@@ -14,10 +14,12 @@ from .character import CharacterWindow
 from .chat import ChatWindow
 from .core.assistant import Assistant, OfflineResponder, ProviderResponder, Responder
 from .core.conversation import Conversation
-from .core.first_run import SetupRunner, make_plan
+from .core.first_run import SetupRunner, SetupStep, make_plan
 from .core.memory import MEMORY_FILENAME, MemoryStore
 from .core.personality import Personality
 from .expressions import Expression, ExpressionManager
+from .gpu_prompt import GpuPackPrompt
+from .loading_window import LoadingWindow
 from .memory_menu import add_memory_menu
 from .providers import create_provider, ollama_server
 from .providers.ollama import OllamaProvider
@@ -25,6 +27,7 @@ from .providers.tools_mcp import ApprovalServer
 from .reactions import CharacterReactions
 from .setup_wizard import SetupWizard
 from .settings.config import Config, assets_dir, data_dir
+from .single_instance import SingleInstance
 from .speech import build_transcriber, build_wake_transcriber, transcriber_signature, wake_signature
 from .speech.controller import ListeningState, PushToTalk
 from .speech.handsfree import HandsFree
@@ -33,7 +36,7 @@ from .speech.recorder import MicrophoneRecorder
 from .speak_menu import add_speak_menu
 from .tool_approval import ToolApproval
 from .update_prompt import UpdatePrompt
-from .voice import Speaker, SpeakingState, SpeechPlayer, build_synthesizer, synthesizer_signature
+from .voice import Speaker, SpeakingState, SpeechPlayer, build_voice, synthesizer_signature
 from .voice_menu import add_voice_menu
 
 # Gap between the character and the chat panel when they sit side by side.
@@ -57,9 +60,25 @@ class EngineCache:
         kept = self._engines.get(name)
         if kept is not None and kept[0] == signature:
             return kept[1]
+        if kept is not None:
+            _close(kept[1])  # The voice helper of a replaced voice would otherwise keep its memory.
         engine = build()
         self._engines[name] = (signature, engine)
         return engine
+
+    def close_all(self) -> None:
+        """Stop engines that run outside this process (the voice helper). Called when quitting."""
+        for _, engine in self._engines.values():
+            _close(engine)
+
+
+def _close(engine: object) -> None:
+    close = getattr(engine, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception as error:  # noqa: BLE001 - quitting must not fail over a helper
+            print(f"Warning: could not stop {type(engine).__name__}: {error}")
 
 
 def build_responder(config: Config, approval: ToolApproval | None = None,
@@ -159,11 +178,22 @@ def place_chat_near(character: QWidget, chat: QWidget) -> None:
     chat.move(x, y)
 
 
-def run() -> int:
+def run(on_single_copy: Callable[[], None] | None = None) -> int:
+    """Start Alter Ego. `on_single_copy` runs once this is known to be the only copy (main.py starts the log)."""
     app = QApplication(sys.argv)
     app.setApplicationName("Alter Ego")
     # Closing/hiding the window must not quit: the app keeps running in the tray.
     app.setQuitOnLastWindowClosed(False)
+
+    # Only one Alter Ego: a second start brings the running one forward and quits (single_instance.py).
+    instance = SingleInstance(data_dir())
+    if not instance.acquire():
+        shown = instance.ask_running_copy_to_show()
+        print("Alter Ego is already running" + ("; showing it." if shown else ", but it did not answer."))
+        return 0
+    app.aboutToQuit.connect(instance.release)
+    if on_single_copy is not None:
+        on_single_copy()
 
     assets = assets_dir()
     app_icon = make_app_icon(assets)
@@ -218,7 +248,7 @@ def run() -> int:
     # Spoken replies: a text-to-speech engine on a worker thread, played through the speakers.
     player = SpeechPlayer(str(config.get("voice", "speaker", "") or ""))
     def synthesizer():
-        return engines.get("synthesizer", synthesizer_signature(config), lambda: build_synthesizer(config))
+        return engines.get("synthesizer", synthesizer_signature(config), lambda: build_voice(config))
 
     speaker = Speaker(player, synthesizer())  # The voice's style is fixed: VoiceStyle's defaults.
     speaker.attach(conversation)
@@ -336,6 +366,7 @@ def run() -> int:
     app.aboutToQuit.connect(push_to_talk.cancel)
     app.aboutToQuit.connect(hands_free.stop)
     app.aboutToQuit.connect(speaker.shutdown)
+    app.aboutToQuit.connect(engines.close_all)  # After the speaker: ends the voice helper process.
     app.aboutToQuit.connect(memory.close)
 
     expressions = ExpressionManager(assets / "animations")
@@ -354,12 +385,27 @@ def run() -> int:
         config.save()
         first_run = False
 
+    def restart_voice() -> None:
+        """The GPU pack was added or removed: the voice helper starts again with or without it."""
+        close = getattr(speaker.synthesizer, "close", None)
+        if callable(close):
+            close()
+        speaker.preload()
+
+    gpu_prompt = GpuPackPrompt(restart_voice)
+    app.aboutToQuit.connect(gpu_prompt.wait)
+
     def finish_setup() -> None:
         setup_holder["wizard"] = None
         config.set("setup", "done", True)
         config.save()
         apply_settings()
-        speaker.preload()  # The voice may have just been downloaded: load it and get "Yes?" ready.
+        runner = setup_holder["runner"]
+        gpu_added = isinstance(runner, SetupRunner) and runner.results.get(SetupStep.GPU, (False, ""))[0]
+        if gpu_added:
+            restart_voice()
+        else:
+            speaker.preload()  # The voice may have just been downloaded: load it and get "Yes?" ready.
 
     def open_setup() -> None:
         wizard = setup_holder["wizard"]
@@ -378,13 +424,14 @@ def run() -> int:
         setup_holder["wizard"] = wizard
         show_window(wizard)
 
-    if not first_run:
-        assistant.warm_up()  # With Ollama chosen, start its server now rather than at the first message.
-    apply_speech_settings()
+    # Load the voice first, in the background: it is the slowest part of starting (about 15 s on a
+    # GPU, 25 s on a CPU), and the first reply waits for it. The chat shows "Waking up..." meanwhile.
+    # Skipped when the voice is off or not downloaded yet.
     player.set_volume(number_in("voice", "volume", 0.8))
-    # Load the voice now, in the background, instead of during the first reply (seconds on a GPU,
-    # longer on a laptop CPU). Skipped when the voice is off or not downloaded yet.
     speaker.preload()
+    if not first_run:
+        assistant.warm_up()  # With Ollama chosen, start its server and load the model, alongside the voice.
+    apply_speech_settings()
     if push_to_talk.transcriber is not None:
         print(f"Alter Ego: push to talk with {push_to_talk.transcriber.describe()}, hold {hotkey.name}")
     if hands_free.active:
@@ -393,14 +440,29 @@ def run() -> int:
         where = " (voice files not downloaded yet: see Spoken replies in the menu)" if speaker.synthesizer.needs_download else ""
         print(f"Alter Ego: spoken replies with {speaker.synthesizer.describe()}{where}")
 
-    # Start near the upper-right corner instead of covering the center of the screen.
-    screen = app.primaryScreen()
-    if screen is not None:
-        available = screen.availableGeometry()
-        character.move(available.right() - character.width() - 32, available.top() + 48)
-    character.power_on()  # Like an old TV switching on.
-    if first_run:
-        open_setup()
+    # The loading window shows what is still waking up (the AI model, the voice); the character
+    # switches on when they are ready. Skipped on the first run, where the setup window comes instead.
+    loading = LoadingWindow(app_icon)
+    if not first_run:
+        if not isinstance(assistant.responder, OfflineResponder) and assistant.warming_up:
+            loading.add_step("brain", "Starting my brain")
+            assistant.warmed_up.connect(lambda: loading.step_done("brain"))
+        if speaker.loading:
+            loading.add_step("voice", "Loading my voice")
+            speaker.loading_finished.connect(lambda: loading.step_done("voice"))
+
+    def show_character() -> None:
+        # Start near the upper-right corner instead of covering the center of the screen.
+        screen = app.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            character.move(available.right() - character.width() - 32, available.top() + 48)
+        character.power_on()  # Like an old TV switching on.
+        if first_run:
+            open_setup()
+
+    loading.finished.connect(show_character)
+    loading.start()
 
     # Quitting switches the TV off first (the chat goes at once), then the app ends.
     def quit_app() -> None:
@@ -459,6 +521,7 @@ def run() -> int:
             open_chat()
 
     hands_free.woke.connect(wake_up)
+    instance.show_requested.connect(wake_up)  # Alter Ego was started again: come forward instead.
 
     # The wake phrase alone: answer "Yes?" out loud so the user knows Alter Ego is listening.
     # The lines are rendered ahead of time (see the preload below), so the answer comes at once.
@@ -472,7 +535,7 @@ def run() -> int:
     def add_shared_menus(menu: QMenu) -> None:
         add_ai_menu(menu, assistant, config, apply_settings, open_setup, lambda: update_prompt.check(manual=True))
         add_voice_menu(menu, push_to_talk, assistant, config, apply_settings)
-        add_speak_menu(menu, speaker, config, apply_settings)
+        add_speak_menu(menu, speaker, config, apply_settings, gpu_prompt)
         add_memory_menu(menu, memory, assistant, config, apply_settings)
 
     character.extra_menu_builder = add_shared_menus

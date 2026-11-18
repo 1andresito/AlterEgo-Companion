@@ -47,12 +47,17 @@ if __name__ == "__main__":
         from alter_ego.providers.tools_mcp import main as serve_tools
 
         raise SystemExit(serve_tools())
+    if "--voice-server" in sys.argv:
+        # Started by Alter Ego itself: the voice runs in its own process (voice/server.py).
+        from alter_ego.voice.server import main as serve_voice
+
+        raise SystemExit(serve_voice(sys.argv))
     if "--check-voice" in sys.argv:
         # Used by the release workflow: can this build load the character voice converter?
         from alter_ego.voice.rvc_local import check_converter_import
 
         raise SystemExit(check_converter_import())
-    log_to_file_without_console()
     from alter_ego.app import run
 
-    raise SystemExit(run())
+    # The log is started only once this is the one running copy, so a second start can't wipe it.
+    raise SystemExit(run(on_single_copy=log_to_file_without_console))

@@ -57,6 +57,18 @@ def build_synthesizer(config: Config, voice_folder: Path | None = None) -> Synth
     return CharacterVoiceSynthesizer(kokoro, model_path=model, models_dir=models_dir(config) / RVC_SUBDIR)
 
 
+def build_voice(config: Config) -> Synthesizer | None:
+    """The voice as the app uses it: build_synthesizer's engine, run in a helper process
+    (voice/remote.py), so its 2-3 GB can be given back. None when spoken replies are off."""
+    local = build_synthesizer(config)
+    if local is None:
+        return None
+    from ..core import gpu_pack
+    from .remote import RemoteVoice
+
+    return RemoteVoice(local, gpu_site=lambda: gpu_pack.site_dir() if gpu_pack.installed() else None)
+
+
 __all__ = [
     "CharacterVoiceSynthesizer",
     "synthesizer_signature",
@@ -69,6 +81,7 @@ __all__ = [
     "Synthesizer",
     "VoiceStyle",
     "build_synthesizer",
+    "build_voice",
     "character_dir",
     "character_model",
     "models_dir",

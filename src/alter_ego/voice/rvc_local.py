@@ -230,6 +230,11 @@ class CharacterVoiceSynthesizer(Synthesizer):
             return f"My voice is downloaded and ready. I'll speak as '{name}' from now on."
         return f"My voice is loaded and ready: Kokoro, converted to '{name}'."
 
+    def download(self) -> None:
+        """Fetch Kokoro's files and the base models if missing, without loading anything."""
+        self.kokoro.download()
+        self._download()
+
     def synthesize(self, text: str, speed: float = 1.0) -> Speech:
         speech = self.kokoro.synthesize(text, speed)
         if not len(speech.samples):

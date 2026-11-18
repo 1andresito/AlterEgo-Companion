@@ -46,6 +46,8 @@ TYPE_INTERVAL_MS = 30
 TYPE_CHARS_PER_TICK = 2.0
 # Typed text runs slightly ahead of the voice, so a sentence is on screen as it is heard.
 VOICE_LEAD = 0.9
+# Within this many pixels of the end counts as "at the bottom": the view then follows new text.
+SCROLL_SLACK_PX = 4
 
 STYLE = """
 QTextBrowser {
@@ -121,11 +123,14 @@ class ChatWindow(QWidget):
         self._push_to_talk = push_to_talk
         # True: recognised speech goes into the input box for checking instead of being sent at once.
         self.review_before_sending = False
-        self._voice_status = ""  # Shown as the input placeholder while listening/recognising.
+        self._voice_status = ""  # Shown as the input placeholder: the newest of the statuses below.
+        # One status per source (the AI, the voice, the microphone, a hint), so one clearing its own
+        # ("" when the model has loaded) does not wipe another still going (the voice loading).
+        self._statuses: dict[str, str] = {}
         self._hint_timer = QTimer(self)
         self._hint_timer.setSingleShot(True)
         self._hint_timer.setInterval(HINT_MS)
-        self._hint_timer.timeout.connect(lambda: self._set_voice_status(""))
+        self._hint_timer.timeout.connect(lambda: self._set_status("hint", ""))
 
         self.setWindowTitle(f"{self._name} - Chat")
         self.setWindowFlags(
@@ -155,10 +160,10 @@ class ChatWindow(QWidget):
         self._conversation.message_updated.connect(self._on_message_updated)
         self._conversation.cleared.connect(self._on_cleared)
         assistant.state_changed.connect(lambda _state: self._update_input_state())
-        assistant.status.connect(self._set_voice_status)  # "Starting Ollama...", "Downloading the AI model... 43%"
+        assistant.status.connect(lambda text: self._set_status("assistant", text))  # "Starting Ollama...", "Downloading the AI model... 43%"
         if push_to_talk is not None:
             push_to_talk.state_changed.connect(self._on_listening_changed)
-            push_to_talk.status.connect(self._set_voice_status)
+            push_to_talk.status.connect(lambda text: self._set_status("push_to_talk", text))
             push_to_talk.transcribed.connect(self._on_transcribed)
             push_to_talk.failed.connect(lambda message: self._say(message, Expression.SWEAT_TALK))
             push_to_talk.prepared.connect(lambda message: self._say(message, Expression.PASSION_TALK))
@@ -166,13 +171,13 @@ class ChatWindow(QWidget):
             self._talk_button.hide()
         if hands_free is not None:
             # Hands-free commands take the same path as push-to-talk text.
-            hands_free.status.connect(self._set_voice_status)
+            hands_free.status.connect(lambda text: self._set_status("hands_free", text))
             hands_free.command.connect(self._on_transcribed)
             hands_free.failed.connect(lambda message: self._say(message, Expression.SWEAT_TALK))
         if speaker is not None:
             speaker.sentence_started.connect(self._on_sentence_started)
             speaker.finished.connect(self._on_speech_finished)
-            speaker.status.connect(self._set_voice_status)
+            speaker.status.connect(lambda text: self._set_status("speaker", text))
             speaker.failed.connect(lambda message: self._say(message, Expression.SWEAT_TALK))
             speaker.prepared.connect(lambda message: self._say(message, Expression.PASSION_TALK))
         self._render()
@@ -272,14 +277,21 @@ class ChatWindow(QWidget):
         labels = {ListeningState.LISTENING: "● rec", ListeningState.TRANSCRIBING: "..."}
         self._talk_button.setText(labels.get(state, "talk"))
 
-    def _set_voice_status(self, text: str) -> None:
-        self._hint_timer.stop()
-        self._voice_status = text
+    def _set_status(self, source: str, text: str) -> None:
+        """Set or clear ("") the status of one source; the newest one still set is shown."""
+        if source != "hint":
+            self._hint_timer.stop()
+            self._statuses.pop("hint", None)
+        self._statuses.pop(source, None)
+        if text:
+            self._statuses[source] = text  # Re-inserted last: the newest.
+        self._voice_status = next(reversed(self._statuses.values()), "")
         self._update_input_state()
 
     def _show_hint(self, text: str) -> None:
         """A short note in the input box that clears itself."""
-        self._set_voice_status(text)
+        self._hint_timer.stop()
+        self._set_status("hint", text)
         self._hint_timer.start()
 
     def _on_transcribed(self, text: str) -> None:
@@ -344,10 +356,14 @@ class ChatWindow(QWidget):
                 self._type_rate = TYPE_CHARS_PER_TICK
             else:
                 limit = min(limit, self._pace_target)
+        if self._view.verticalScrollBar().isSliderDown():
+            return  # The user is dragging the scrollbar: wait, so the text doesn't move under them.
         if self._typed_chars < limit:
             self._typed_progress = min(self._typed_progress + self._type_rate, limit)
-            self._typed_chars = int(self._typed_progress)
-            self._render()
+            typed = int(self._typed_progress)
+            if typed != self._typed_chars:  # A slow voice can advance less than one character per tick.
+                self._typed_chars = typed
+                self._render()
         elif message.complete and self._typed_chars >= len(message.text) and not self._spoken(message):
             self._type_timer.stop()
             self._typing_message = None
@@ -400,9 +416,13 @@ class ChatWindow(QWidget):
                 text = text[: self._typed_chars] + "▌"  # left half block = cursor
             parts.append(self._format_message(message, text))
 
-        self._view.setHtml("".join(parts))
+        # Follow the newest text only while the user is at the bottom: someone who scrolled up to
+        # read keeps their place (rebuilding the document used to throw them back down every tick).
         scrollbar = self._view.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        at_bottom = scrollbar.value() >= scrollbar.maximum() - SCROLL_SLACK_PX
+        kept = scrollbar.value()
+        self._view.setHtml("".join(parts))
+        scrollbar.setValue(scrollbar.maximum() if at_bottom else min(kept, scrollbar.maximum()))
 
     def _format_message(self, message: Message, text: str) -> str:
         body = html.escape(text).replace("\n", "<br>")

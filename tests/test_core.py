@@ -26,6 +26,7 @@ from alter_ego.core.assistant import (  # noqa: E402
     with_tag,
 )
 from alter_ego.core.conversation import Conversation, Message, Role  # noqa: E402
+from alter_ego.core.knowledge import Knowledge  # noqa: E402
 from alter_ego.core.personality import Personality  # noqa: E402
 from alter_ego.expressions import Expression  # noqa: E402
 from alter_ego.providers.base import ChatMessage, Provider, ProviderError  # noqa: E402
@@ -200,6 +201,14 @@ class ExpressionTagTests(unittest.TestCase):
         self.assertEqual(with_tag(None, "plain"), "plain")
 
 
+class RoleWordTests(unittest.TestCase):
+    def test_a_leading_role_name_is_never_shown(self):
+        self.assertEqual(split_expression_tag("assistant [shy] Oh, hi."), (Expression.SHY_TALK, "Oh, hi.", True))
+        self.assertEqual(split_expression_tag("assistant Oh, hi.")[1], "Oh, hi.")
+        self.assertEqual(split_expression_tag("assis"), (None, "", False))  # could still be the role name
+        self.assertEqual(split_expression_tag("Assistants are helpful.")[1], "Assistants are helpful.")
+
+
 class CleanReplyTests(unittest.TestCase):
     def test_stage_directions_removed(self):
         self.assertEqual(clean_reply("*giggles* Hi there! *typing noises*", final=True), "Hi there!")
@@ -218,6 +227,20 @@ class CleanReplyTests(unittest.TestCase):
 
     def test_plain_text_untouched(self):
         self.assertEqual(clean_reply("Just talking, nothing fancy.", final=True), "Just talking, nothing fancy.")
+
+    def test_bracketed_stage_directions_are_removed(self):
+        self.assertEqual(clean_reply("Mondo lost control, and... [pauses, struggling to continue] he was involved.",
+                                     final=True), "Mondo lost control, and... he was involved.")
+        self.assertEqual(clean_reply("He was warm and caring.\n\n[soft-spoken", final=True), "He was warm and caring.")
+        self.assertEqual(clean_reply("Hello! [smiles", final=False), "Hello! ")
+        self.assertEqual(clean_reply("[not a mood] stays", final=True), "[not a mood] stays")  # only directions go
+
+    def test_tool_calls_written_as_text_are_never_shown(self):
+        leaked = 'Let me see. {"name":"read_file","parameters":{"path":"Chihiro_Fujisaki_ultimate_talent.txt"}} Hmm.'
+        self.assertEqual(clean_reply(leaked, final=True), "Let me see. Hmm.")
+        self.assertEqual(clean_reply('{"name":"talk", "parameters":{}}', final=True), "")
+        self.assertEqual(clean_reply('Okay! {"name": "read_f', final=False), "Okay! ")  # half-streamed: hidden
+        self.assertEqual(clean_reply("Sets like {1, 2} and {braces} stay.", final=True), "Sets like {1, 2} and {braces} stay.")
 
 
 class OfflineResponderTests(unittest.TestCase):
@@ -282,6 +305,67 @@ class ProviderResponderTests(unittest.TestCase):
         self.assertTrue(provider.last_messages[0].content.startswith(personality.system_prompt))
         self.assertIn("[shy]", provider.last_messages[0].content)   # tag instruction present
         self.assertEqual(provider.last_messages[1].content, "[shy] Hi there.")
+
+    def test_old_replies_with_tool_json_are_not_sent_back(self):
+        responder, provider = self.make("model-a")
+        history = (
+            Message(Role.USER, "hello"),
+            Message(Role.ASSISTANT, '{"name":"talk", "parameters":{}}', expression=Expression.TALK),
+            Message(Role.USER, "who made you?"),
+            Message(Role.ASSISTANT, 'Master did! {"name":"read_file","parameters":{"path":"x"}}', expression=Expression.HAPPY),
+            Message(Role.USER, "nice"),
+        )
+        messages = responder.build_messages(Personality.default(), history)
+        self.assertEqual([m.role for m in messages], ["system", "user", "user", "assistant", "user"])
+        self.assertEqual(messages[3].content, "[happy] Master did!")
+        self.assertFalse(any("{" in m.content for m in messages[1:]))
+
+    def test_the_story_the_user_asks_about_goes_into_the_prompt(self):
+        responder, provider = self.make("model-a")
+        personality = Personality.load(PERSONALITY_FILE)
+        ask = lambda *texts: responder.build_messages(personality, [Message(Role.USER, t) for t in texts])[0].content
+        plain = ask("hi")
+        self.assertIn("Chihiro", plain)  # the core is always there
+        self.assertNotIn("Biker Gang", plain)
+        self.assertIn("Biker Gang", ask("Who is Mondo?"))
+        self.assertIn("Biker Gang", ask("Who is Mondo?", "and what happened to him after?"))  # a follow-up keeps it
+        self.assertLess(len(ask("Mondo Celeste Kyoko Makoto Junko Byakuya")), 6000)  # at most a few topics
+
+
+class KnowledgeTests(unittest.TestCase):
+    def write(self, data: str) -> Path:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "knowledge.json"
+        path.write_text(data, encoding="utf-8")
+        return path
+
+    def test_topics_are_chosen_by_whole_keywords_latest_message_first(self):
+        knowledge = Knowledge.load(self.write(
+            '{"core": ["Core line."], "topics": ['
+            '{"keywords": ["mondo"], "text": "About Mondo."},'
+            '{"keywords": ["leon"], "text": "About Leon."},'
+            '{"keywords": ["kyoko", "detective"], "text": "About Kyoko."},'
+            '{"keywords": ["celeste"], "text": "About Celeste."},'
+            '{"keywords": ["sakura"], "text": "About Sakura."},'
+            '{"keywords": [], "text": "Never chosen."}]}'))
+        self.assertEqual(knowledge.prompt_for(["hello"]), "Core line.")
+        self.assertIn("About Mondo.", knowledge.prompt_for(["Tell me about MONDO!"]))
+        self.assertNotIn("About Leon.", knowledge.prompt_for(["chameleon"]))  # whole words only
+        many = knowledge.prompt_for(["mondo leon", "kyoko the detective celeste sakura"])
+        self.assertEqual(sum(t in many for t in ("Mondo", "Leon", "Kyoko", "Celeste", "Sakura")), 3)
+        self.assertIn("About Kyoko.", many)  # two keywords in the latest message: the best match
+        self.assertNotIn("Never chosen.", many)
+
+    def test_a_missing_or_broken_file_means_no_knowledge(self):
+        self.assertEqual(Knowledge.load(Path("does/not/exist.json")).prompt_for(["mondo"]), "")
+        self.assertEqual(Knowledge.load(self.write("{ broken")).prompt_for(["mondo"]), "")
+        self.assertEqual(Knowledge.load(self.write("[1, 2]")).prompt_for(["mondo"]), "")
+
+    def test_the_bundled_knowledge_loads(self):
+        knowledge = Personality.load(PERSONALITY_FILE).knowledge
+        self.assertGreaterEqual(len(knowledge.topics), 8)
+        self.assertIn("Master", knowledge.core)
 
 
 class AssistantTests(unittest.TestCase):

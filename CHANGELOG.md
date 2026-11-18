@@ -2,6 +2,23 @@
 
 What changed in each version, newest first. The release page on GitHub shows the section for that version.
 
+## v0.9.0: Lighter, steadier, and your GPU for the voice
+
+- **Much less memory.** Alter Ego's voice now runs in a separate helper process. Alter Ego itself uses about 200–300 MB instead of 2–4 GB. On computers with less than 16 GB of memory, the voice is closed after 10 quiet minutes and its memory goes back to your computer; it loads again when it next speaks. On bigger computers it stays loaded so replies stay quick, and it is restarted if it ever grows past 3.5 GB.
+- **Use your NVIDIA graphics card for the voice.** On Windows, **Spoken replies** → **Use my NVIDIA GPU for my voice** (or the setup window) downloads the GPU pack once (about 2.8 GB). The voice then speaks about 3 times faster. It's never downloaded without asking, and **Stop using the GPU pack** removes it. **Spoken replies** shows where the voice runs.
+- **Only one Alter Ego.** Starting it again while it's running brings the running one forward instead of opening a second copy.
+- **A loading window.** At start-up a small window shows Alter Ego waking up (its AI model and its voice), and the character appears when it's ready.
+- **Fix:** the chat jumped back down while you scrolled up during a reply. It now stays where you put it, and follows new text only when you're at the bottom.
+
+## v0.8.1: Quicker to answer, and Alter Ego knows its story
+
+- **Faster first reply.** Alter Ego's voice now loads first thing at start-up and warms up before you talk, instead of during your first message. The chat shows "Waking up... loading my voice" meanwhile. The first words of a long reply are spoken sooner too.
+- **Alter Ego knows Danganronpa.** It remembers Trigger Happy Havoc as the in-game Alter Ego would: Master (Chihiro), the other students, the cases and its own story. It talks about them when you ask, gently, and doesn't bring up spoilers on its own. The facts are in `assets/personality/knowledge.json`, which you can edit ([how](docs/CUSTOMIZING.md#what-alter-ego-knows-about-danganronpa)).
+- **Fix:** replies sometimes showed tool code such as `{"name":"read_file","parameters":{...}}`. That is never shown now, and old replies with it no longer make the AI repeat it.
+- **Fix:** the AI looked things up in files and on the web when you only wanted to chat, then said "I don't know". It now uses files only when you talk about files, and the web when you ask for something online (news, weather, a search).
+- **Fix:** stage directions in brackets ("[pauses]") and a stray "assistant" at the start of a reply are no longer shown.
+- Ollama gets more room for the conversation (8K tokens instead of 4K), so the start of a long chat isn't cut off.
+
 ## v0.8.0: Files anywhere, with your OK
 
 - **Fix:** the "Is this okay?" question about files could open behind Alter Ego and the chat, where it couldn't be clicked. It now always comes up on top, in the middle of the screen.

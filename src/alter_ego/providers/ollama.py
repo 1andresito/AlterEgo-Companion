@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from typing import Callable, Iterator
 
-from ..core.tools import ToolBox, progress_text
+from ..core.tools import ToolBox, WrittenCallFilter, progress_text
 from .base import ChatMessage, Provider, ProviderError
 from .https import urlopen
 from .ollama_server import DEFAULT_COMMAND, direct_url, is_local, ollama_server
@@ -39,6 +39,11 @@ MAX_TOOL_ROUNDS = 4   # Tool calls in a row before the model must answer in word
 TEMPERATURE = 0.6     # A little below Ollama's 0.8: fewer invented facts, still warm.
 KEEP_ALIVE = "30m"    # How long the model stays loaded after a reply; reloading it is what made replies slow.
 LOAD_TIMEOUT_S = 120  # Loading a model from disk into memory can take a while on a slow drive.
+# Room for the personality, the Danganronpa knowledge and the recent chat (Ollama's default is 4096,
+# which cut off the start of the prompt). Loading and chatting must ask for the same size, or the
+# first reply reloads the model.
+NUM_CTX = 8192
+MODEL_OPTIONS = {"temperature": TEMPERATURE, "num_ctx": NUM_CTX}
 
 
 class OllamaProvider(Provider):
@@ -78,7 +83,8 @@ class OllamaProvider(Provider):
 
     def load_model(self, model: str) -> None:
         """Load the model now: a /api/generate request without a prompt is Ollama's way to do that."""
-        response = self._open("POST", "/api/generate", {"model": model, "keep_alive": KEEP_ALIVE}, timeout=LOAD_TIMEOUT_S)
+        response = self._open("POST", "/api/generate", {"model": model, "keep_alive": KEEP_ALIVE, "options": MODEL_OPTIONS},
+                              timeout=LOAD_TIMEOUT_S)
         try:
             response.read()
         except OSError as error:
@@ -137,32 +143,29 @@ class OllamaProvider(Provider):
         round, at most MAX_TOOL_ROUNDS times, so a confused model cannot loop.
         """
         chat = [{"role": m.role, "content": m.content} for m in messages]
-        tools = self.tools.specs() if self.tools is not None and model not in self._no_tools else []
-        for round_number in range(MAX_TOOL_ROUNDS + 1):
-            offer = tools if round_number < MAX_TOOL_ROUNDS else []  # The last round must answer in words.
+        request = next((m.content for m in reversed(messages) if m.role == "user"), "")
+        tools = self.tools.specs(request) if self.tools is not None and model not in self._no_tools else []
+        round_number = 0
+        words_only = False  # Set when the model wrote only a call it cannot make: one more try, in words.
+        while True:
+            # The last round, and the try in words, offer no tools: the model must answer.
+            offer = tools if round_number < MAX_TOOL_ROUNDS and not words_only else []
             calls: list[dict] = []
             text = ""
-            holding = bool(offer)  # Text that may turn out to be a tool call written as JSON is held back.
+            written = WrittenCallFilter()  # Tool calls typed into the reply as JSON never reach the chat.
             try:
                 for piece, call in self._stream_round(chat, model, offer, cancelled):
                     if call is not None:
                         calls.append(call)
                         continue
-                    text += piece
-                    if holding and _may_be_json_call(text):
-                        continue
-                    if holding:
-                        holding = False
-                        yield text  # It is ordinary words after all: show everything held so far.
-                    else:
-                        yield piece
-                if holding and text:
-                    written = _json_call(text, offer)
-                    if written is not None and not calls:
-                        calls.append(written)
-                        text = ""
-                    else:
-                        yield text
+                    shown = written.feed(piece)
+                    if shown:
+                        text += shown
+                        yield shown
+                rest = written.flush()
+                if rest:
+                    text += rest
+                    yield rest
             except ProviderError as error:
                 if offer and "does not support tools" in str(error):
                     # Older or tiny models cannot use tools; remember that and just chat.
@@ -171,7 +174,18 @@ class OllamaProvider(Provider):
                     tools = []
                     continue
                 raise
-            if not calls or cancelled():
+            if cancelled():
+                return
+            if not calls:
+                # A call typed as text counts when it names a tool on offer; anything else (a mood
+                # tag such as {"name": "talk"}, or a tool in a round without tools) is only dropped.
+                offered = {spec["function"]["name"] for spec in offer}
+                calls = [{"function": call} for call in written.calls if call["name"] in offered]
+            if not calls:
+                if written.calls and not _has_words(text) and not words_only:
+                    words_only = True
+                    chat.append({"role": "system", "content": WORDS_ONLY})
+                    continue
                 return
             chat.append({"role": "assistant", "content": text, "tool_calls": calls})
             for call in calls:
@@ -186,6 +200,7 @@ class OllamaProvider(Provider):
                 progress("")
             if text and not text[-1].isspace():
                 yield " "  # The next round's words follow on from what was already said.
+            round_number += 1
 
     def _stream_round(self, chat: list[dict], model: str, tools: list[dict], cancelled: Callable[[], bool]):
         """One /api/chat request. Yields (text, None) for words and ("", call) for each tool call."""
@@ -194,7 +209,7 @@ class OllamaProvider(Provider):
             "messages": chat,
             "stream": True,
             "keep_alive": KEEP_ALIVE,
-            "options": {"temperature": TEMPERATURE},
+            "options": dict(MODEL_OPTIONS),
         }
         if tools:
             payload["tools"] = tools
@@ -279,27 +294,12 @@ class OllamaProvider(Provider):
 
 
 # ----- Tool calls written as text -----
-# Small models (llama3.2 3B among them) sometimes write a tool call into the reply as
-# JSON, e.g. {"name": "read_file", "parameters": {"path": "notes.txt"}}, instead of
-# using Ollama's tool-call field. Such text is held back and run as the call it means.
+# core/tools.py WrittenCallFilter takes {"name": ..., "parameters": ...} objects out of
+# the streamed text; stream_reply runs the ones that name a tool on offer.
 
 _LEADING_TAG = re.compile(r"^\s*\[[a-z]{1,15}\]\s*")
+WORDS_ONLY = "Answer the user in plain spoken words now. Do not write JSON or tool calls."
 
 
-def _may_be_json_call(text: str) -> bool:
-    rest = _LEADING_TAG.sub("", text, count=1).lstrip()
-    return rest == "" or rest.startswith("{")
-
-
-def _json_call(text: str, offered: list[dict]) -> dict | None:
-    """The tool call the text spells out, or None if it is not one of the offered tools."""
-    rest = _LEADING_TAG.sub("", text, count=1).strip()
-    try:
-        data = json.loads(rest)
-    except json.JSONDecodeError:
-        return None
-    names = {spec["function"]["name"] for spec in offered}
-    if not isinstance(data, dict) or data.get("name") not in names:
-        return None
-    args = data.get("parameters", data.get("arguments", {}))
-    return {"function": {"name": data["name"], "arguments": args if isinstance(args, dict) else {}}}
+def _has_words(text: str) -> bool:
+    return bool(_LEADING_TAG.sub("", text, count=1).strip())

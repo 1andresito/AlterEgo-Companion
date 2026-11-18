@@ -2,14 +2,17 @@
 
 The personality is data, not code: editing assets/personality/alter_ego.json
 changes how Alter Ego introduces itself and, from v0.3.0 on, the system prompt
-that is sent to the AI model.
+that is sent to the AI model. "knowledge_file" names the file with what Alter Ego
+knows about its own story (see knowledge.py).
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from .knowledge import Knowledge
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,8 @@ class Personality:
     return_greeting: str = "Oh, you're back! I kept everything we talked about."
     # Said out loud right after "Hey Alter Ego", so the user knows Alter Ego is listening (one at random).
     wake_replies: tuple[str, ...] = ("Yes?",)
+    # What Alter Ego knows about its story (core/knowledge.py), from the file named in "knowledge_file".
+    knowledge: Knowledge = field(default_factory=Knowledge)
 
     @classmethod
     def default(cls) -> Personality:
@@ -59,6 +64,9 @@ class Personality:
         if isinstance(prompt, list):
             prompt = "\n".join(str(line) for line in prompt)
 
+        knowledge_file = str(data.get("knowledge_file", "") or "")
+        knowledge = Knowledge.load(path.parent / knowledge_file) if knowledge_file else Knowledge()
+
         return cls(
             name=str(data.get("name", fallback.name)),
             description=str(data.get("description", fallback.description)),
@@ -68,4 +76,5 @@ class Personality:
             return_greeting=str(data.get("return_greeting", fallback.return_greeting)),
             wake_replies=tuple(str(line) for line in data.get("wake_replies", fallback.wake_replies) if str(line).strip())
             or fallback.wake_replies,
+            knowledge=knowledge,
         )

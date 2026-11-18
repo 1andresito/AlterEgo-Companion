@@ -14,10 +14,20 @@ Alter Ego's character is defined in `assets/personality/alter_ego.json`:
 | `wake_replies` | Said out loud right after "Hey Alter Ego" (one at random), so you know it is listening |
 | `traits`, `description` | Notes for contributors |
 | `system_prompt` | The instructions sent to the AI before every conversation. It is written as a list of lines for readability, and kept short on purpose (about 150 words), because it is sent with every reply. |
+| `knowledge_file` | The file with what Alter Ego knows about its own story (see below). Leave it out for no story knowledge. |
 
 The personality follows Chihiro Fujisaki, who made Alter Ego in the story. Alter Ego is kind, soft-spoken and timid, quick to apologise, secretly determined to become stronger, flustered by compliments, and confident and precise about programming. It also tells the model to say "I don't know" rather than guess, and to report only what its tools really returned.
 
 If the file is missing or broken, a small built-in personality is used and a warning is written to the log.
+
+### What Alter Ego knows about Danganronpa
+
+`assets/personality/knowledge.json` holds the facts of Danganronpa: Trigger Happy Havoc, written for Alter Ego to remember:
+
+- `core`: always sent with the system prompt. Who Alter Ego is, who Master (Chihiro) was, the killing game in brief, and how to talk about it: honestly and gently, never bringing up secrets, deaths or culprits unless asked, and saying "I don't remember" rather than inventing.
+- `topics`: one short text per character or case, each with `keywords`. A topic is added only when one of its keywords is in what you just said (or the message before). At most three topics are added at a time.
+
+The whole file is never sent at once, because small local models have little room and get confused by long prompts. To add a fact, put it in the topic it belongs to, or add a topic with its own keywords. Keep each text to a few sentences.
 
 ### How the AI picks a face
 
