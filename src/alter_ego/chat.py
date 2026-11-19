@@ -12,11 +12,12 @@ as finished only when the last clip has been played.
 from __future__ import annotations
 
 import html
+import math
 import time
 from datetime import date, timedelta
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextCursor, QTextOption
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -55,6 +56,8 @@ DOTS_INTERVAL_MS = 400
 STALL_S = 0.8
 # The input box grows with its text up to this many lines, then scrolls.
 INPUT_MAX_LINES = 5
+# Shown instead of "thinking" once the words are in and only the voice is still on its way.
+VOICE_WAIT = "getting my voice ready"
 
 STYLE = """
 QTextBrowser {
@@ -140,15 +143,48 @@ class ChatInput(QPlainTextEdit):
     def lines(self) -> int:
         return max(1, int(self.document().size().height()))
 
+    def setPlaceholderText(self, text: str) -> None:
+        if text != self.placeholderText():
+            super().setPlaceholderText(text)
+            self.fit()  # A long status ("Downloading my voice...") wraps: the box grows so all of it shows.
+
+    def content_height(self) -> float:
+        """How tall the text (or, in an empty box, the wrapped placeholder) really is, in pixels.
+
+        Measured from the laid-out lines, not lines x lineSpacing: with display scaling the lines
+        have fractional heights, and the rounded sum left the last line cut off.
+        """
+        margin = self.document().documentMargin()
+        if self.document().isEmpty():
+            width = max(1.0, self.viewport().width() - 2 * margin)
+            bounds = QFontMetricsF(self.font()).boundingRect(
+                QRectF(0, 0, width, 1e6), int(Qt.TextFlag.TextWordWrap), self.placeholderText() or " "
+            )
+            return bounds.height() + 2 * margin
+        layout = self.document().documentLayout()
+        height = 0.0
+        block = self.document().firstBlock()
+        while block.isValid():
+            height += layout.blockBoundingRect(block).height()
+            block = block.next()
+        return height + 2 * margin
+
+    def max_height(self) -> float:
+        return INPUT_MAX_LINES * QFontMetricsF(self.font()).lineSpacing() + 2 * self.document().documentMargin()
+
     def fit(self) -> None:
-        """As tall as the text, between one line and INPUT_MAX_LINES."""
-        lines = min(self.lines(), INPUT_MAX_LINES)
+        """As tall as the text (or the placeholder), between one line and INPUT_MAX_LINES."""
         frame = self.height() - self.viewport().height()  # Border and padding from the style sheet.
-        text = lines * self.fontMetrics().lineSpacing() + 2 * self.document().documentMargin()
-        self.setFixedHeight(int(text + frame))
+        if frame < 0:
+            frame = 2 * self.frameWidth()  # Not laid out yet.
+        content = self.content_height()
+        overflow = content > self.max_height() + 0.5
+        self.setFixedHeight(math.ceil(min(content, self.max_height()) + frame))
         self.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded if self.lines() > INPUT_MAX_LINES else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded if overflow else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        if not overflow:
+            self.verticalScrollBar().setValue(0)  # Everything fits: the first line must never be scrolled away.
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -233,7 +269,7 @@ class ChatWindow(QWidget):
         self._conversation.message_added.connect(self._on_message_added)
         self._conversation.message_updated.connect(self._on_message_updated)
         self._conversation.cleared.connect(self._on_cleared)
-        assistant.state_changed.connect(lambda _state: self._update_input_state())
+        assistant.state_changed.connect(self._on_assistant_state)
         assistant.thought_changed.connect(lambda _thought: self._render() if self._waiting() or self._dots_shown else None)
         assistant.status.connect(lambda text: self._set_status("assistant", text))  # "Starting Ollama...", "Downloading the AI model... 43%"
         if push_to_talk is not None:
@@ -331,17 +367,29 @@ class ChatWindow(QWidget):
         self._assistant.stop()
         if self._speaker is not None:
             self._speaker.stop()
-        message = self._typing_message
-        if message is not None:
-            # Show what had arrived, and finish the typewriter as if it had typed it all.
-            self._type_timer.stop()
-            self._typing_message = None
-            self._pace_target = None
-            self._typed_chars = len(message.text)
-            self.typing_finished.emit()
+        self._finish_typing()
         self._render()
         self._update_input_state()
         self._input.setFocus()
+
+    def _finish_typing(self) -> None:
+        """Show the rest of the message being typed at once, as if the typewriter had typed it all."""
+        message = self._typing_message
+        if message is None:
+            return
+        self._type_timer.stop()
+        self._typing_message = None
+        self._pace_target = None
+        self._typed_chars = len(message.text)
+        self.typing_finished.emit()
+
+    def _on_assistant_state(self, state: AssistantState) -> None:
+        # A new message was sent (by voice) while the last reply was still being typed out: that
+        # reply is finished, so show all of it now rather than "thinking..." next to half of it.
+        if state is AssistantState.THINKING and self._typing_message is not None and self._typing_message.complete:
+            self._finish_typing()
+            self._render()
+        self._update_input_state()
 
     def _clear(self) -> None:
         self._assistant.cancel()
@@ -425,7 +473,9 @@ class ChatWindow(QWidget):
         if not self._conversation.contains(message):
             return  # A reply that was still streaming when the chat was cleared.
         if message.role is Role.ASSISTANT and self._typing_message is None and not message.complete:
-            self._start_typing(message)
+            # Picked up again after another line took the typewriter: its words are already on
+            # screen, so carry on from there (from the start only if the voice says it again).
+            self._start_typing(message, shown=0 if self._spoken(message) else len(message.text))
         self._render()
 
     def _on_cleared(self) -> None:
@@ -436,10 +486,10 @@ class ChatWindow(QWidget):
         self._render()
         self._update_input_state()
 
-    def _start_typing(self, message: Message) -> None:
+    def _start_typing(self, message: Message, shown: int = 0) -> None:
         self._typing_message = message
-        self._typed_chars = 0
-        self._typed_progress = 0.0
+        self._typed_chars = shown
+        self._typed_progress = float(shown)
         self._type_rate = TYPE_CHARS_PER_TICK
         self._last_typed_at = time.monotonic()
         # With a voice, wait for the first sentence to start playing before showing anything.
@@ -535,10 +585,19 @@ class ChatWindow(QWidget):
             return self._typed_chars == 0 or self._stalled(message)
         return self._assistant.state is AssistantState.THINKING
 
-    def _format_pending(self) -> str:
+    def _pending_words(self, message: Message | None) -> str:
+        """What the line before any words says: "thinking", "searching the web" (Assistant.thought),
+        or VOICE_WAIT once the AI is done and the words only wait for the voice."""
+        if self._assistant.state is not AssistantState.THINKING and message is not None:
+            voice_pending = self._spoken(message) and self._pace_target == 0
+            if voice_pending and (message.complete or message.text):
+                return VOICE_WAIT
+        return self._assistant.thought or "thinking"
+
+    def _format_pending(self, message: Message | None = None) -> str:
         """The line shown before any words, saying what Alter Ego is doing: "ALTER EGO > thinking...",
-        "thinking some more...", "searching the web..." (Assistant.thought)."""
-        words = self._assistant.thought or "thinking"
+        "thinking some more...", "searching the web...", "getting my voice ready..."."""
+        words = self._pending_words(message)
         return (
             f'<p style="margin:0 0 8px 0;">'
             f'<span style="color:#baff85; font-weight:bold;">{html.escape(self._name.upper())} &gt;</span> '
@@ -566,16 +625,20 @@ class ChatWindow(QWidget):
                 parts.append(self._format_divider(day_label(day)))
             text = message.text
             if message is self._typing_message and self._typed_chars == 0 and self._is_busy():
-                parts.append(self._format_pending())  # Nothing typed yet (waiting for the voice): the dots.
+                parts.append(self._format_pending(message))  # Nothing typed yet (waiting for the voice): the dots.
                 dots_shown = True
                 continue
-            if message is self._typing_message or not message.complete:
+            if message is self._typing_message:
                 tail = ""
-                if message is self._typing_message and self._stalled(message):
+                if self._stalled(message):
                     doing = self._assistant.thought  # Mid-reply, a tool at work: "(searching the web...)".
                     tail = f" ({doing}{self._dots()})" if doing else f" {self._dots()}"
                     dots_shown = True
                 text = text[: self._typed_chars] + tail + "▌"  # left half block = cursor
+            elif not message.complete:
+                # Still streaming while another line has the typewriter: all of it so far, never cut
+                # to the other line's progress.
+                text += "▌"
             parts.append(self._format_message(message, text))
         if self._typing_message is None and self._assistant.state is AssistantState.THINKING:
             parts.append(self._format_pending())

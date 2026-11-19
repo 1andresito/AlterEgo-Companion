@@ -6,6 +6,7 @@ Behaviour is steered by the prompt text:
 
   "fail-auth"   -> the "Not logged in" error shape
   "fail-resume" -> errors when --resume is given (simulates a lost session)
+  "tool-mid"    -> some words, then a web search, then more words
   anything else -> streams "[happy] You said: <prompt>" and echoes the flags
 """
 
@@ -38,6 +39,17 @@ def main(argv: list[str]) -> int:
         emit({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}, "error": "failed"})
         emit({"type": "result", "subtype": "success", "is_error": True, "result": text, "session_id": session_id})
         return 1
+
+    if "tool-mid" in prompt:
+        def delta(text: str) -> None:
+            emit({"type": "stream_event", "event": {"type": "content_block_delta",
+                                                    "delta": {"type": "text_delta", "text": text}}})
+        delta("[happy] Let me look.")
+        emit({"type": "stream_event", "event": {"type": "content_block_start",
+                                                "content_block": {"type": "tool_use", "name": "WebSearch"}}})
+        delta(" Found it!")
+        emit({"type": "result", "subtype": "success", "is_error": False, "result": "", "session_id": session_id})
+        return 0
 
     reply = f"[happy] You said: {prompt}"
     if "--system-prompt" in argv:

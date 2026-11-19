@@ -403,6 +403,13 @@ class ClaudeCodeProviderTests(unittest.TestCase):
             ClaudeCodeProvider(command="definitely-not-a-real-command-xyz").test_connection()
         self.assertIn("Install Claude Code", str(caught.exception))
 
+    def test_a_tool_used_mid_reply_clears_its_status_when_the_words_go_on(self):
+        statuses: list[str] = []
+        msgs = [ChatMessage("system", "You are Alter Ego."), ChatMessage("user", "tool-mid")]
+        text = "".join(self.provider.stream_reply(msgs, "default", lambda: False, statuses.append))
+        self.assertEqual(text, "[happy] Let me look. Found it!")
+        self.assertEqual(statuses, ["", "Searching the web...", ""])  # never left on "Searching the web..."
+
     def test_cancel_kills_process(self):
         calls = {"n": 0}
 

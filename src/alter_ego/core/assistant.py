@@ -719,6 +719,9 @@ class Assistant(QObject):
                 complete=True,
             )
         self._reply = None
+        # A tool status ("Searching the web...") must not outlive the reply, even if the provider
+        # failed before clearing it.
+        self.status.emit("")
         self._set_state(AssistantState.IDLE)
 
     def _set_state(self, state: AssistantState) -> None:

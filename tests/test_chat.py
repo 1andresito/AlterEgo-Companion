@@ -188,6 +188,106 @@ WAITING_SCRIPT = textwrap.dedent("""
 """)
 
 
+FIXES_SCRIPT = textwrap.dedent("""
+    import sys
+    sys.path.insert(0, sys.argv[1])
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtWidgets import QApplication
+    from alter_ego import chat as chat_module
+    from alter_ego.chat import ChatWindow
+    from alter_ego.core.assistant import Assistant, AssistantState, OfflineResponder
+    from alter_ego.core.conversation import Conversation, Message, Role
+    from alter_ego.core.personality import Personality
+    from alter_ego.expressions import Expression
+
+    class FakeSpeaker(QObject):
+        sentence_started = Signal(object, int, float)
+        finished = Signal(object)
+        status = Signal(str)
+        failed = Signal(str)
+        prepared = Signal(str)
+        current_message = None
+
+    app = QApplication([])
+    conversation = Conversation()
+    assistant = Assistant(Personality.default(), conversation, OfflineResponder())
+    speaker = FakeSpeaker()
+    chat = ChatWindow(assistant, speaker=speaker)
+    chat.show()
+    app.processEvents()
+    last_line = lambda: chat._view.toPlainText().strip().splitlines()[-1]
+    box = chat._input
+
+    # A status wider than the box is shown in full: the empty box grows to fit it.
+    one_line = box.height()
+    box.setPlaceholderText("Downloading my voice (about 300 MB, only once)...")
+    app.processEvents()
+    assert box.height() > one_line, (box.height(), one_line)
+    assert box.content_height() <= box.viewport().height() + 0.5, (box.content_height(), box.viewport().height())
+    box.setPlaceholderText("Say something...")
+    app.processEvents()
+    assert box.height() == one_line, (box.height(), one_line)
+
+    # Typed lines all fit, and the first one is never scrolled out of view.
+    box.setText("a message long enough to wrap onto a few lines in the box")
+    app.processEvents()
+    assert box.content_height() <= box.viewport().height() + 0.5, (box.content_height(), box.viewport().height())
+    assert box.verticalScrollBar().value() == 0
+    box.clear()
+
+    # The reply is in, the voice is not playing yet: the wait says so, not "thinking".
+    reply = Message(Role.ASSISTANT, "Hello there! Nice to see you.", complete=False)
+    speaker.current_message = reply
+    assistant._set_state(AssistantState.THINKING)
+    conversation.add(reply)
+    assistant._set_state(AssistantState.REPLYING)
+    conversation.update(reply, complete=True)
+    assistant._set_state(AssistantState.IDLE)
+    assert last_line().startswith("ALTER EGO > " + chat_module.VOICE_WAIT), last_line()
+    speaker.sentence_started.emit(reply, len(reply.text), 0.03)
+    for _ in range(20):
+        chat._type_step()
+    speaker.current_message = None
+    speaker.finished.emit(reply)
+    for _ in range(5):
+        chat._type_step()
+    assert last_line() == "ALTER EGO > Hello there! Nice to see you.", last_line()
+    assert chat._typing_message is None
+
+    # Something new is asked (by voice) while the last reply is still being typed: all of it shows at once.
+    old = Message(Role.ASSISTANT, "An older reply that takes a while to type out.", complete=True)
+    conversation.add(old)
+    chat._type_step()
+    assert chat._typing_message is old
+    assistant._set_state(AssistantState.THINKING)
+    assert chat._typing_message is None
+    assert "An older reply that takes a while to type out." in chat._view.toPlainText()
+    assert box.placeholderText().endswith("is thinking..."), box.placeholderText()
+    assistant._set_state(AssistantState.IDLE)
+
+    # A line said in between (a voice problem) never cuts a streaming reply short, and the reply
+    # carries on from where it was instead of being typed again from the start.
+    streaming = Message(Role.ASSISTANT, "Words that are streaming in", complete=False)
+    assistant._set_state(AssistantState.REPLYING)
+    conversation.add(streaming)
+    for _ in range(40):
+        chat._type_step()
+    chat._say("Oops.", Expression.SWEAT_TALK)
+    assert "Words that are streaming in▌" in chat._view.toPlainText(), chat._view.toPlainText()
+    for _ in range(10):
+        chat._type_step()
+    assert chat._typing_message is None
+    conversation.update(streaming, text="Words that are streaming in, and more")
+    assert chat._typing_message is streaming and chat._typed_chars == len("Words that are streaming in, and more")
+    conversation.update(streaming, complete=True)
+    assistant._set_state(AssistantState.IDLE)
+    for _ in range(5):
+        chat._type_step()
+    assert chat._typing_message is None
+    print("ok")
+""")
+
+
 LOADING_SCRIPT = textwrap.dedent("""
     import sys, time
     sys.path.insert(0, sys.argv[1])
@@ -247,6 +347,15 @@ class ChatWaitingTests(unittest.TestCase):
     def test_dots_while_thinking_and_an_input_that_wraps(self):
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
         done = subprocess.run([sys.executable, "-c", WAITING_SCRIPT, str(PROJECT_ROOT / "src")],
+                              capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        self.assertIn("ok", done.stdout)
+
+
+class ChatFixesTests(unittest.TestCase):
+    def test_statuses_fit_the_box_and_thinking_is_only_shown_while_thinking(self):
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+        done = subprocess.run([sys.executable, "-c", FIXES_SCRIPT, str(PROJECT_ROOT / "src")],
                               capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr[-2000:])
         self.assertIn("ok", done.stdout)

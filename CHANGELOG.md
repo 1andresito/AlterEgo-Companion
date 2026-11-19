@@ -2,6 +2,14 @@
 
 What changed in each version, newest first. The release page on GitHub shows the section for that version.
 
+## v0.9.3: A chat that says what's really happening
+
+- **Fix:** long notes in the chat box, such as "Downloading my voice (about 300 MB, only once)...", were cut off after the first line. The box now grows to show all of it, as it does for what you type. With display scaling (125%, 150%), the last line you typed could also be cut off a little; the box now measures the real text.
+- **Fix:** with spoken replies on, the chat said `thinking...` after the reply had arrived, while it waited for the voice to start, so Alter Ego looked stuck thinking while its face was already talking. It now says `getting my voice ready...` until the first words are heard.
+- **Fix:** asking something new by voice while the last reply was still being typed showed "is thinking..." next to a half-typed reply. The rest of that reply now shows at once.
+- **Fix:** after a web search in the middle of a reply (with Claude), or when a reply failed during a search, the chat box could keep saying "Searching the web..." after Alter Ego was done.
+- **Fix:** a message from Alter Ego in the middle of a reply (for example about its voice) could cut the reply's text short, then type it again from the start.
+
 ## v0.9.2: Real news, a stop button, and thinking you can see
 
 - **Alter Ego shows when it's thinking.** While it gets a reply ready, the chat shows `ALTER EGO > thinking...` with moving dots, so a pause no longer looks like the app froze. If it stops mid-reply to look something up, the dots come back after its words, with what it's doing: `(searching the web...)`.

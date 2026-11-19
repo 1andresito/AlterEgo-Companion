@@ -268,6 +268,7 @@ class ClaudeCodeProvider(Provider):
         streamed_any = False
         last_text = ""
         pending_space = False
+        tool_running = False  # A tool's status is in the chat until the next words arrive.
         result: dict | None = None
         noise: list[str] = []  # Non-JSON output, shown if things go wrong.
         try:
@@ -291,13 +292,15 @@ class ClaudeCodeProvider(Provider):
                     if inner.get("type") == "content_block_start" and block.get("type") == "tool_use":
                         if progress:
                             progress(_tool_progress(str(block.get("name", ""))))
+                            tool_running = True
                         continue
                     if inner.get("type") == "message_start" and last_text and not last_text[-1].isspace():
                         pending_space = True  # A new turn after a tool: keep its words apart from the earlier ones.
                     delta = inner.get("delta") or {}
                     if delta.get("type") == "text_delta" and delta.get("text"):
-                        if progress and not streamed_any:
-                            progress("")
+                        if progress and (tool_running or not streamed_any):
+                            progress("")  # Words again: also after a tool used mid-reply.
+                            tool_running = False
                         if pending_space:
                             pending_space = False
                             yield " "

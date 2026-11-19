@@ -486,6 +486,21 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(thoughts, ["thinking", "fake preparing", "thinking", "searching the web",
                                     "looking at what I found", ""])  # getting ready counts as a thought too
 
+    def test_a_tool_status_is_cleared_when_the_reply_fails_mid_tool(self):
+        class Broken(FakeResponder):
+            def stream_reply(self, text, personality, history, cancelled, progress=None):
+                yield "[happy] Let me search."
+                progress("Searching the web...")
+                raise ProviderError("the network went away")
+
+        assistant = Assistant(Personality.default(), Conversation(), Broken(""))
+        statuses: list[str] = []
+        assistant.status.connect(statuses.append)
+        assistant.send("what's the news?")
+        self.run_until_idle(assistant)
+        self.assertIn("Searching the web...", statuses)
+        self.assertEqual(statuses[-1], "")  # the chat's input box is not left saying it
+
     def test_stop_before_any_words_adds_nothing(self):
         conversation = Conversation()
         assistant = Assistant(Personality.default(), conversation, FakeResponder("[happy] hi"))
